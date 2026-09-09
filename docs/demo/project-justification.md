@@ -142,7 +142,7 @@ Technical status and evidence role are separate. A delivered evidence baseline d
 | --- | --- | --- |
 | Ingestion API PROD POST (Industrias Ebro) | Validated (phases 0–4, metadata-only phase 4) | Classified from run; slot assignment is arbitrary (`--tests SLOT=SUFFIX`) |
 | Ingestion API PRE GET | Validated | Classified from run; slot assignment is arbitrary |
-| Ingestion API PROD POST (CIRCE) | Partially validated (phases 0–3; phase 4 pending CIRCE-specific body) | No phase 4 claim without CIRCE payload |
+| Ingestion API PROD POST (CIRCE) | Validated end-to-end (phases 0–4 with CIRCE-specific body) | Phase 4 POST metadata-only; request and response bodies are not persisted |
 | WFS exchange | Validated | Classified from run |
 | SPARQL Results JSON exchange | Validated | Classified from run |
 | CSV/B2/InesDataStore path | Legacy-supported | Historical delivered baseline (`--preset legacy_assessment`); not recommended for new integrations |

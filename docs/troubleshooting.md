@@ -896,19 +896,19 @@ Treat matching 500s as an upstream/backend diagnosis. Fix the payload or backend
 
 Historical note: a past Intake validation bug around an unexpected `field_id` shape produced this pattern and was corrected on the backend. Keep that as a diagnostic example, not as a general client rule.
 
-### Issue: CIRCE phase 4 is blocked without a company body
+### Issue: phase 4 POST uses a body for the wrong company
 
 **Symptom**
 
-CIRCE PROD completed phases 0–3, but phase 4 cannot run.
+Phase 4 POST fails or cannot be executed because the request body does not match the company-specific ingestion schema.
 
 **Likely cause**
 
-No CIRCE-specific functional request body was provided (the Industrias Ebro body is not interchangeable).
+PROD request bodies are company-specific: Industrias Ebro uses `centerId`, while CIRCE uses `districtCode`.
 
 **Corrective action**
 
-Leave CIRCE phase 4 as **N/A** until a CIRCE body file exists. Do not reuse the Ebro payload.
+Provide the request body for the correct company. Do not reuse the Industrias Ebro payload for CIRCE or the CIRCE payload for Industrias Ebro. Both PROD company profiles have been validated end-to-end through phase 4.
 
 ## WFS
 

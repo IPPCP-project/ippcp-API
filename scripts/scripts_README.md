@@ -559,7 +559,7 @@ unset INGESTA_API_KEY INGESTA_API_PROVIDER_ID
 
 GET histórico (PRE y otros HttpData GET) conserva descarga en phase4 (`downloads/assets/…` + manifest + sha256).
 
-Phase4 POST (solo con body de la empresa correcta; Industrias Ebro validado end-to-end; CIRCE phase4 = N/A sin payload CIRCE):
+Phase4 POST (con body específico de la empresa correcta; Industrias Ebro y CIRCE validados end-to-end en PROD):
 
 ```bash
 export INGESTA_API_REQUEST_BODY_FILE=/path/file.json
@@ -574,7 +574,7 @@ evidencias/runs/${SUFFIX}/phase4/post_result.json
 evidencias/runs/${SUFFIX}/phase4/post_manifest.json
 ```
 
-No uses el payload de Industrias Ebro para CIRCE.
+El payload depende de la empresa: Industrias Ebro utiliza `centerId` y CIRCE utiliza `districtCode`. No uses el payload de una empresa para la otra.
 
 ### CSV ingesta real (B2)
 

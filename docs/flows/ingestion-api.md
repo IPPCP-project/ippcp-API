@@ -74,8 +74,8 @@ One stable asset per company because `X-Provider-Id` is fixed per published data
 Validation status (functional):
 
 - Industrias Ebro PROD: phases 0–4 validated (POST metadata-only phase 4).
-- CIRCE PROD: phases 0–3 validated.
-- CIRCE phase 4: **N/A** until a company-specific functional request body is provided. Do not reuse the Industrias Ebro payload against CIRCE.
+- CIRCE PROD: phases 0–4 validated (POST metadata-only phase 4).
+- PROD request bodies are company-specific: Industrias Ebro uses `centerId`, while CIRCE uses `districtCode`. Do not reuse one company's payload for the other.
 
 ## Flow-specific configuration
 
@@ -298,7 +298,7 @@ evidencias/runs/<run_id>/phase4/post_manifest.json
 
 Do not enable `PHASE3_TRY_DATA_CONSUMPTION=1` for POST assets; the legacy phase 3 probe is GET-only and is skipped for `ASSET_HTTP_METHOD=POST`.
 
-CIRCE: stop after phase 3 unless a CIRCE-specific body file is available. Do not run CIRCE phase 4 with the Industrias Ebro payload.
+CIRCE phase 4 requires a CIRCE-specific body using `districtCode`. Industrias Ebro uses `centerId`. Both PROD company profiles are validated end-to-end through phase 4; do not reuse one company's payload for the other.
 
 ## Expected result
 
@@ -338,8 +338,8 @@ Required acceptance checks:
 
 Required acceptance checks:
 
-- phases 0–3 completed successfully (CIRCE may stop here);
-- for Industrias Ebro phase 4: `ASSET_HTTP_METHOD=POST`, HTTP 2xx, `request_body_persisted=false`, `response_body_persisted=false`, `download_persisted=false`;
+- phases 0–4 completed successfully for both PROD company profiles;
+- for PROD POST phase 4: `ASSET_HTTP_METHOD=POST`, HTTP 2xx, `request_body_persisted=false`, `response_body_persisted=false`, `download_persisted=false`;
 - no API key, EDR authorization, or POST request/response body appears in persisted control evidence;
 - do not require `download_manifest.json` or a response SHA-256 for POST metadata-only.
 

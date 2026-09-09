@@ -656,9 +656,9 @@ echo "INGESTION_PROD_SUFFIX=$INGESTION_PROD_SUFFIX"
 
 **STOP if:** phase 4 is not `ok`, HTTP status is not 2xx, or request/response bodies appear in persisted evidence.
 
-## 8. CIRCE PROD — stop after phase 3
+## 8. CIRCE PROD — phase 4 with a company-specific body
 
-CIRCE PROD (`ingesta_api_pull_circe_prod.json`) is validated through phases 0–3. Phase 4 is **N/A** until a CIRCE-specific functional request body is available. Do **not** run phase 4 with the Industrias Ebro payload.
+CIRCE PROD (`ingesta_api_pull_circe_prod.json`) is validated end-to-end through phase 4 using a CIRCE-specific request body. CIRCE uses `districtCode`, whereas the Industrias Ebro request body uses `centerId`. Do **not** reuse one company's payload for the other.
 
 Prerequisites match section 7 except the asset config and stop condition.
 
@@ -1546,7 +1546,7 @@ Also require the profile-specific check:
 
 - **PRE GET Ingestion API, WFS, SPARQL:** semantic validation from sections 6, 9–11; non-empty download; manifest SHA-256.
 - **PROD POST Industrias Ebro:** HTTP 2xx; `post_manifest.json` with `manifest_kind=post_metadata_only`; no GET-style download required.
-- **CIRCE PROD (phases 0–3):** stop after phase 3; do not claim phase 4 without a CIRCE-specific body.
+- **CIRCE PROD (phases 0–4):** validated end-to-end with a CIRCE-specific request body; do not reuse the Industrias Ebro payload.
 
 **STOP if:** any required phase is not `ok`, or profile-specific validation failed.
 
