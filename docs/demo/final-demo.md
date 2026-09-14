@@ -58,7 +58,7 @@ The demo supports these validated variants:
 - **WFS:** GeoJSON resource using `HttpData-PULL`; supports the resource-consumption narrative in business Phase B.
 - **SPARQL JSON:** SPARQL Results JSON using `HttpData-PULL`; supports the semantic-resource narrative in business Phase B.
 
-**CIRCE PROD** is validated through phases 0–3 only. Phase 4 requires a CIRCE-specific request body; do not reuse the Industrias Ebro payload or present CIRCE phase 4 as validated without it.
+**CIRCE PROD** is validated end-to-end through phase 4 using a CIRCE-specific request body. CIRCE uses `districtCode`; do not reuse the Industrias Ebro payload.
 
 The primary variant is selected during readiness review according to audience, objective, environment, and business narrative. **PROD POST / Industrias Ebro** is the recommended primary technical narrative when the environment supports it. The other validated variants remain alternatives and contingencies.
 
@@ -74,7 +74,7 @@ Unless separately implemented and validated before the readiness decision, the l
 - automated onboarding, offboarding, revocation, or credential rotation;
 - a validated Phase C technical workflow;
 - automated API-key rotation;
-- CIRCE PROD phase 4 without a CIRCE-specific request body;
+- CIRCE PROD phase 4 with a request body that does not match the CIRCE-specific schema;
 - SPARQL graph consumption;
 - formal KPI or assessment compliance.
 
@@ -251,11 +251,11 @@ See [Troubleshooting](../troubleshooting.md) for implemented restart and recover
 
 ## Known limitations
 
-- **Validated:** Ingestion API PROD POST (Industrias Ebro phases 0–4), PRE GET, WFS, and SPARQL Results JSON technical exchanges; CIRCE PROD phases 0–3.
+- **Validated:** Ingestion API PROD POST (Industrias Ebro and CIRCE phases 0–4), PRE GET, WFS, and SPARQL Results JSON technical exchanges.
 - **Delivered baseline:** historical CSV/B2 evidence remains preserved (`--preset legacy_assessment`).
 - **Legacy-supported:** v1 and the CSV/B2 technical path are not recommended for new integration.
 - **Planned:** final integrated backends, automated lifecycle management, Phase C technical realization, and automated API-key rotation.
-- **Pending / N/A:** CIRCE PROD phase 4 until a CIRCE-specific request body exists; SPARQL graph consumption.
+- **Pending / N/A:** SPARQL graph consumption.
 
 ## Related documentation
 

@@ -83,7 +83,7 @@ The implementation is developed in the context of the IPPCP project and its INES
 All current recommended flows use `IPPCP_FLOW_VERSION=v2` and `HttpData-PULL`:
 
 - **Ingestion API PRE GET:** protected JSON resource; materialized phase 4 download.
-- **Ingestion API PROD POST:** upstream POST with `proxyBody=true`; metadata-only phase 4 (Industrias Ebro validated phases 0–4; CIRCE validated through phase 3).
+- **Ingestion API PROD POST:** upstream POST with `proxyBody=true`; metadata-only phase 4 (Industrias Ebro and CIRCE validated phases 0–4).
 - **WFS:** GeoJSON resources exposed by the selected WFS layer.
 - **SPARQL:** SPARQL Results JSON requested explicitly by the canonical configuration.
 
@@ -183,7 +183,7 @@ The current package supports:
 - flow-specific semantic validation for materialized-response flows;
 - POST metadata-only validation for PROD Ingestion API;
 - run-level summary, manifest or POST control metadata, byte-count, and SHA-256 generation where applicable;
-- end-to-end validated Ingestion API PROD POST (Industrias Ebro), PRE GET, WFS, and SPARQL JSON variants; CIRCE PROD through phase 3.
+- end-to-end validated Ingestion API PROD POST variants for Industrias Ebro and CIRCE, PRE GET, WFS, and SPARQL JSON.
 
 Validation means the technical path completed with a successful phase 4 result — materialized download with verified manifest (materialized response) or POST metadata-only with HTTP 2xx. It does not imply completion of every planned application, lifecycle, or production deployment capability.
 
@@ -199,7 +199,7 @@ The following remain planned or outside the current validated package:
 - automated onboarding, offboarding, revocation, and credential rotation;
 - automated API-key rotation for immutable assets;
 - a validated Phase C technical workflow;
-- CIRCE PROD phase 4 without a CIRCE-specific request body;
+- CIRCE PROD phase 4 with a request body that does not match the CIRCE-specific schema;
 - SPARQL graph consumption.
 
 Future implementations must preserve the current security boundaries and state sequence described in [Backend integration](../backend-integration.md).

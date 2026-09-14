@@ -18,7 +18,7 @@ That document is the Golden Path: machine setup, local credentials, Phase 0 thro
 
 Current assets use `v2` `HttpData-PULL`:
 
-- Ingestion API v2 — **PRE GET** (validated phases 0–4, materialized response) and **PROD POST** (Industrias Ebro validated phases 0–4; CIRCE validated through phase 3)
+- Ingestion API v2 — **PRE GET** (validated phases 0–4, materialized response) and **PROD POST** (Industrias Ebro validated phases 0–4; CIRCE validated phases 0–4)
 - WFS city
 - WFS districts / juntas
 - SPARQL Results JSON

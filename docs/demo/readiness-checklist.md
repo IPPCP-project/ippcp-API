@@ -28,7 +28,7 @@ The checklist does not establish formal KPI or assessment compliance. It verifie
 - [ ] Consumer EdD credentials are available securely through the expected ignored local file.
 - [ ] Flow-specific secrets are available securely only when required.
 - [ ] For Ingestion API PRE GET, the PRE API key and provider identifier can be loaded immediately before phase1 and removed afterward.
-- [ ] For Ingestion API PROD POST, the PROD API key file, local request body file (`INGESTA_API_REQUEST_BODY_FILE`), and Industrias Ebro config are ready; CIRCE is not presented as phase-4 validated without a CIRCE-specific body.
+- [ ] For Ingestion API PROD POST, the PROD API key file, the selected company config, and a matching local request body file (`INGESTA_API_REQUEST_BODY_FILE`) are ready; use `centerId` for Industrias Ebro and `districtCode` for CIRCE.
 - [ ] The target environment (PRE and/or PROD as selected) is reachable.
 - [ ] Required local tools and a supported Bash version are available as described in the [workshop](../workshop.md) and [Getting Started](../getting-started.md).
 

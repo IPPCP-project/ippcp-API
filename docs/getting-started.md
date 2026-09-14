@@ -16,7 +16,7 @@ The current public flows are:
 
 `v2` is current and recommended. `v1` remains legacy-supported but is not used by this guide. `test3`, discarded experiments, upstream JWT authentication, and old workshop procedures are non-current.
 
-The PRE GET profile and PROD POST profile (Industrias Ebro phases 0–4; CIRCE phases 0–3) are validated Ingestion API paths. PRE and PROD are environment profiles, not universal deployment requirements; another environment needs its own connector and upstream configuration.
+The PRE GET profile and PROD POST profile (Industrias Ebro phases 0–4; CIRCE phases 0–4) are validated Ingestion API paths. PRE and PROD are environment profiles, not universal deployment requirements; another environment needs its own connector and upstream configuration.
 
 ## Prerequisites
 

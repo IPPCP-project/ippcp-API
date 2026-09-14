@@ -22,7 +22,7 @@ Current assets and the same technical lifecycle (`phase0` → `phase4`). Phase 4
 | --- | --- | --- | --- | --- |
 | Ingestion API PRE GET | `ingesta` | `conn-citycouncil-ippcp` | `conn-company-ippcp` | `ingesta_api_pull_pre_api_key.json` |
 | Ingestion API PROD POST — Industrias Ebro | `ingesta` | `conn-citycouncil-ippcp` | `conn-company-ippcp` | `ingesta_api_pull_industrias_ebro_prod.json` |
-| Ingestion API PROD — CIRCE (phases 0–3) | `ingesta` | `conn-citycouncil-ippcp` | `conn-company-ippcp` | `ingesta_api_pull_circe_prod.json` |
+| Ingestion API PROD POST — CIRCE | `ingesta` | `conn-citycouncil-ippcp` | `conn-company-ippcp` | `ingesta_api_pull_circe_prod.json` |
 | WFS city | `consumo` | `conn-citycouncil-ippcp` | `conn-company-ippcp` | `emisiones_wfs_ciudad_geojson.json` |
 | WFS districts / juntas | `consumo` | `conn-citycouncil-ippcp` | `conn-company-ippcp` | `emisiones_wfs_juntas_geojson.json` |
 | SPARQL Results JSON | `consumo` | `conn-citycouncil-ippcp` | `conn-company-ippcp` | `emisiones_sparql_limit10_format_json.json` |
@@ -660,7 +660,7 @@ echo "INGESTION_PROD_SUFFIX=$INGESTION_PROD_SUFFIX"
 
 CIRCE PROD (`ingesta_api_pull_circe_prod.json`) is validated end-to-end through phase 4 using a CIRCE-specific request body. CIRCE uses `districtCode`, whereas the Industrias Ebro request body uses `centerId`. Do **not** reuse one company's payload for the other.
 
-Prerequisites match section 7 except the asset config and stop condition.
+Prerequisites match section 7 except the asset config and the CIRCE-specific request body (`districtCode`).
 
 Start from the [reset block in section 5.1](#51-reset-shell-context-before-each-asset).
 
@@ -723,7 +723,7 @@ test -n "${AGREEMENT_ID:-}" && echo "AGREEMENT_ID=$AGREEMENT_ID" || echo "FAIL A
 jq '.phases.phase2' "evidencias/runs/${SUFFIX}/summary.json"
 ```
 
-### 8.4 Phase 3 — stop here for CIRCE
+### 8.4 Phase 3
 
 ```bash
 source runtime/env/latest/phase2_env.sh
@@ -737,15 +737,48 @@ test -n "${EDR_URL:-}" && echo "EDR_URL_SET=yes" || echo "FAIL EDR_URL"
 jq '.phases.phase3' "evidencias/runs/${SUFFIX}/summary.json"
 ```
 
-**Expected result:** phases 0–3 are `ok` in `summary.json`; no phase 4 step unless a CIRCE-specific body is supplied.
+**Expected result:** Phase 3 completes successfully and provides the transfer identifier and EDR required by Phase 4.
 
 ```bash
 jq -e '.phases.phase0.status == "ok" and .phases.phase1.status == "ok" and .phases.phase2.status == "ok" and .phases.phase3.status == "ok"' \
   "evidencias/runs/${SUFFIX}/summary.json" >/dev/null \
-  && echo "OK — CIRCE validated through phase3" || echo "FAIL — review summary"
+  && echo "OK — CIRCE phase 3 complete" || echo "FAIL — review summary"
 ```
 
-**STOP if:** any of phases 0–3 is not `ok`, or you attempt phase 4 without a CIRCE-specific body file.
+**STOP if:** any of phases 0–3 is not `ok`. Phase 4 requires the CIRCE-specific request body; do not reuse the Industrias Ebro payload.
+
+### 8.5 Phase 4 (POST metadata-only)
+
+```bash
+source runtime/env/latest/phase3_env.sh
+
+export INGESTA_API_REQUEST_BODY_FILE="/path/to/circe-specific-body.json"
+
+"${BASH_BIN}" scripts/phase4_save_download.sh
+
+unset INGESTA_API_REQUEST_BODY_FILE
+```
+
+Replace the placeholder path with your local CIRCE body file (`districtCode`). Do not reuse the Industrias Ebro payload (`centerId`). Do not commit or paste its contents.
+
+**Expected result:** POST control metadata exists; no GET-style download is required:
+
+```bash
+RUN_DIR="evidencias/runs/${SUFFIX}"
+
+test -f "${RUN_DIR}/phase4/post_result.json" && echo "OK post_result"
+test -f "${RUN_DIR}/phase4/post_manifest.json" && echo "OK post_manifest"
+jq '{manifest_kind, http_status, download_persisted, response_body_persisted, request_body_persisted}' \
+  "${RUN_DIR}/phase4/post_manifest.json"
+jq '.phases.phase4' "${RUN_DIR}/summary.json"
+
+DOWNLOAD_FILE="downloads/assets/${ASSET_ID}/latest.${ASSET_EXTENSION:-json}"
+test ! -s "${DOWNLOAD_FILE}" 2>/dev/null && echo "OK — no GET-style download expected for POST"
+```
+
+Success is `curl` exit 0 plus HTTP 2xx. The response body may be empty or non-JSON.
+
+**STOP if:** phase 4 is not `ok`, HTTP status is not 2xx, request/response bodies appear in persisted evidence, or the wrong company payload was used.
 
 ## 9. WFS city — complete run
 
@@ -1239,11 +1272,13 @@ jq . "$RUN_DIR/phase4/post_manifest.json"
 jq -e '.manifest_kind == "post_metadata_only" and .request_body_persisted == false and .response_body_persisted == false and .download_persisted == false and (.http_status | tonumber) >= 200 and (.http_status | tonumber) < 300' "$RUN_DIR/phase4/post_manifest.json" >/dev/null && echo "OK POST metadata-only" || exit 1
 ```
 
-### 12.3 CIRCE PROD through phase 3
+### 12.3 CIRCE PROD complete (phases 0–4)
+
+CIRCE uses `districtCode` in its request body. Do not reuse the Industrias Ebro payload (`centerId`).
 
 ```bash
 export BASH_BIN="${BASH_BIN:-$(command -v bash)}"; set +x
-unset IPPCP_DATASPACE_FILE IPPCP_DATASPACE_DIR IPPCP_FLOW_DIR SUFFIX ASSET_ID AGREEMENT_ID TRANSFER_ID EDR_URL CD_ID VOCAB_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID
+unset IPPCP_DATASPACE_FILE IPPCP_DATASPACE_DIR IPPCP_FLOW_DIR SUFFIX ASSET_ID AGREEMENT_ID TRANSFER_ID EDR_URL CD_ID VOCAB_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID INGESTA_API_REQUEST_BODY_FILE
 export IPPCP_DATASPACE=ippcp IPPCP_FLOW=ingesta IPPCP_FLOW_VERSION=v2
 "${BASH_BIN}" scripts/phase0_context_smoke.sh || exit 1
 source runtime/env/latest/phase0_env.sh
@@ -1256,8 +1291,10 @@ source runtime/env/latest/phase1_env.sh
 source runtime/env/latest/phase2_env.sh
 "${BASH_BIN}" scripts/phase3_transfer_edr.sh || exit 1
 source runtime/env/latest/phase3_env.sh
-jq -e '.phases.phase0.status == "ok" and .phases.phase1.status == "ok" and .phases.phase2.status == "ok" and .phases.phase3.status == "ok"' "evidencias/runs/${SUFFIX}/summary.json" >/dev/null || exit 1
-echo "STOP — do not run phase 4 without a CIRCE-specific body file; never reuse the Industrias Ebro payload"
+export INGESTA_API_REQUEST_BODY_FILE="/path/to/circe-specific-body.json"
+"${BASH_BIN}" scripts/phase4_save_download.sh || exit 1
+unset INGESTA_API_REQUEST_BODY_FILE
+jq -e '.phases.phase0.status == "ok" and .phases.phase1.status == "ok" and .phases.phase2.status == "ok" and .phases.phase3.status == "ok" and .phases.phase4.status == "ok"' "evidencias/runs/${SUFFIX}/summary.json" >/dev/null || exit 1
 ```
 
 ### 12.4 WFS city complete (phases 0–4)
@@ -1365,7 +1402,7 @@ Recommended order:
 
 1. Ingestion API PRE GET: Phase 0 → 4, then save `INGESTION_SUFFIX`.
 2. Ingestion API PROD POST (Industrias Ebro): new Phase 0 → 4, then save `INGESTION_PROD_SUFFIX` (optional).
-3. CIRCE PROD: new Phase 0 → 3 only unless a CIRCE-specific body is available.
+3. CIRCE PROD: new Phase 0 → 4 using a CIRCE-specific request body.
 4. WFS city: new Phase 0 → 4, then save `WFS_CITY_SUFFIX`.
 5. WFS juntas: new Phase 0 → 4, then save `WFS_JUNTAS_SUFFIX`.
 6. SPARQL: new Phase 0 → 4, then save `SPARQL_SUFFIX`.
@@ -1529,7 +1566,7 @@ jq -e '
   || echo "FAIL — review summary"
 ```
 
-### Strict phases 0–3 validator (CIRCE PROD only)
+### Strict phases 0–4 validator (CIRCE PROD)
 
 ```bash
 jq -e '
@@ -1537,8 +1574,9 @@ jq -e '
   and .phases.phase1.status == "ok"
   and .phases.phase2.status == "ok"
   and .phases.phase3.status == "ok"
+  and .phases.phase4.status == "ok"
 ' "evidencias/runs/${SUFFIX}/summary.json" >/dev/null \
-  && echo "OK — CIRCE validated through phase3" \
+  && echo "OK — CIRCE validated phases 0-4" \
   || echo "FAIL — review summary"
 ```
 
@@ -1546,7 +1584,7 @@ Also require the profile-specific check:
 
 - **PRE GET Ingestion API, WFS, SPARQL:** semantic validation from sections 6, 9–11; non-empty download; manifest SHA-256.
 - **PROD POST Industrias Ebro:** HTTP 2xx; `post_manifest.json` with `manifest_kind=post_metadata_only`; no GET-style download required.
-- **CIRCE PROD (phases 0–4):** validated end-to-end with a CIRCE-specific request body; do not reuse the Industrias Ebro payload.
+- **CIRCE PROD (phases 0–4):** validated end-to-end with a CIRCE-specific request body (`districtCode`); do not reuse the Industrias Ebro payload (`centerId`).
 
 **STOP if:** any required phase is not `ok`, or profile-specific validation failed.
 

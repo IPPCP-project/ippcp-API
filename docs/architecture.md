@@ -203,7 +203,7 @@ The full credential ownership and persistence rules are defined in [Authenticati
 
 - PRE GET Ingestion API execution completed end-to-end with materialized download and verified manifest.
 - PROD POST Ingestion API — Industrias Ebro: phases 0–4 validated (POST metadata-only phase 4).
-- PROD POST Ingestion API — CIRCE: phases 0–3 validated; phase 4 pending a CIRCE-specific request body (do not reuse Industrias Ebro payload).
+- PROD POST Ingestion API — CIRCE: phases 0–4 validated (POST metadata-only phase 4; CIRCE-specific request body required; do not reuse Industrias Ebro payload).
 - WFS and SPARQL executions completed with verified materialized phase 4 outputs.
 
 Concrete validation identifiers and hashes remain internal unless explicitly sanitized and approved.

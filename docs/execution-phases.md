@@ -297,7 +297,7 @@ Used by PROD Ingestion API:
 - does **not** create a GET-style download under `downloads/assets/` or a response SHA-256;
 - success is `curl` exit 0 plus HTTP 2xx.
 
-See [Ingestion API](flows/ingestion-api.md) for PROD POST operator checks and CIRCE stop conditions.
+See [Ingestion API](flows/ingestion-api.md) for PROD POST operator checks and company-specific request-body requirements.
 
 ### Purpose (common)
 
