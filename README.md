@@ -14,6 +14,32 @@ Follow the executable workshop from a clean clone:
 
 That document is the Golden Path: machine setup, local credentials, Phase 0 through Phase 4, semantic validation, traceability, and evidence packaging.
 
+## Zaragoza pilot for DSS4SC
+
+This repository contains the Zaragoza technical data-space automation for the IPPCP pilot. It does not contain the Ljubljana implementation.
+
+The current recommended path is `v2` `HttpData-PULL`:
+
+```text
+phase0 -> phase1 -> phase2 -> phase3 -> phase4
+```
+
+- Executable Golden Path: [docs/workshop.md](docs/workshop.md)
+- Status reference: [docs/architecture.md](docs/architecture.md)
+
+Validated profiles:
+
+- Ingestion API PRE GET
+- Ingestion API PROD POST — Industrias Ebro
+- Ingestion API PROD POST — CIRCE
+- WFS city
+- WFS districts / juntas
+- SPARQL Results JSON
+
+Connector credentials, Ingestion API keys, and PROD request bodies are not stored in Git and must be provisioned separately by the corresponding deployment operator.
+
+`v1`, `phase1b` / `phase3b` / `phase4b`, B2/CSV/InesDataStore, `test3`, configurations under `asset_configs/demo/` and `asset_configs/examples/`, and legacy SPARQL variants are not the recommended path.
+
 ## What you can run
 
 Current assets use `v2` `HttpData-PULL`:

@@ -1,14 +1,13 @@
 # scripts/ — Automatización API IPPCP
 
 > For current execution, start with [`docs/workshop.md`](../docs/workshop.md).
+> Este fichero no es el golden path.
 >
 > **Referencia avanzada y de compatibilidad**
 >
-> Para una ejecución actual, comienza por [`README.md`](../README.md) y
-> [`docs/getting-started.md`](../docs/getting-started.md). `v2` es el camino
-> vigente. `v1` y los procedimientos B2/CSV se conservan para reproducibilidad
-> histórica; las secciones legacy de este documento no constituyen el quick
-> start recomendado.
+> `v2` es el camino vigente. `v1` y los procedimientos B2/CSV se conservan para
+> reproducibilidad histórica; las secciones legacy de este documento no constituyen
+> el quick start recomendado.
 
 Librería compartida y scripts de fase para operar por API el EdD de IPPCP. La configuración operativa actual está en `flujos/ippcp/v2/`. `flujos/ippcp/v1/` se conserva exclusivamente como legado reproducible.
 
@@ -484,9 +483,9 @@ ASSET_CONFIG=asset_configs/real/consumo/wfs/emisiones_wfs_ciudad_geojson.json \
 $BASH_BIN scripts/phase1_provider_publish.sh
 ```
 
-Run validado: `1783070513`.
+Validado de punta a punta. El identificador concreto de la ejecución permanece interno.
 
-### WFS juntas (B1 disponible)
+### WFS juntas (B1 validado)
 
 ```bash
 ASSET_CONFIG=asset_configs/real/consumo/wfs/emisiones_wfs_juntas_geojson.json \
@@ -500,9 +499,9 @@ ASSET_CONFIG=asset_configs/real/consumo/sparql/emisiones_sparql_limit10_format_j
 $BASH_BIN scripts/phase1_provider_publish.sh
 ```
 
-Run validado: `1783070583`.
+Validado de punta a punta. El identificador concreto de la ejecución permanece interno.
 
-### Ingesta API Pull PRE (B1 disponible)
+### Ingesta API Pull PRE (B1 validado)
 
 ```bash
 source data/real/ingesta/auth/ingesta_api_key.env

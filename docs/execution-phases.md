@@ -149,7 +149,7 @@ It also verifies the published asset and checks that it is present in the provid
 - `ASSET_CONFIG` for the selected `HttpData-PULL` resource;
 - provider-side upstream credentials when required by the asset configuration.
 
-For current public flows, `ASSET_CONFIG` must point to a canonical Ingestion API, WFS, or SPARQL configuration. The Ingestion API configuration requires `INGESTA_API_KEY` and `INGESTA_API_PROVIDER_ID` in the local environment. It does not use an upstream JWT.
+For current public flows, `ASSET_CONFIG` must point to a canonical Ingestion API, WFS, or SPARQL configuration. Every current Ingestion API profile requires `INGESTA_API_KEY` in the local environment during phase 1. PRE GET does not embed `provider_id`, so it also requires `INGESTA_API_PROVIDER_ID`. PROD POST embeds `provider_id` in the company asset configuration, so `INGESTA_API_PROVIDER_ID` is not required. The current profiles do not use an upstream JWT.
 
 ### Outputs and inherited state
 
@@ -368,28 +368,49 @@ Phase files exchange execution state, not credentials. See [Backend integration]
 
 ## Runnable clean v2 executions
 
-The executable copy/paste path is [workshop.md](workshop.md). The following blocks remain as condensed reference from the repository root. They contain no credential values.
+The executable copy/paste path is [workshop.md](workshop.md). Status classification is in [architecture.md](architecture.md). The following blocks remain condensed reference from the repository root. They contain no credential values.
+
+Validated profiles, aligned with the workshop:
+
+- Ingestion API PRE GET
+- Ingestion API PROD POST — Industrias Ebro
+- Ingestion API PROD POST — CIRCE
+- WFS city
+- WFS districts / juntas
+- SPARQL Results JSON
 
 ### Select the resource
 
-For Ingestion API:
+PRE GET Ingestion API:
 
 ```bash
 export IPPCP_DATASPACE=ippcp
 export IPPCP_FLOW=ingesta
 export IPPCP_FLOW_VERSION=v2
+export ASSET_CONFIG="asset_configs/real/ingesta/ingesta_api_pull_pre_api_key.json"
 ```
 
-For the validated WFS resource:
+PROD POST Ingestion API. Select one company configuration. `provider_id` is embedded in the configuration, so `INGESTA_API_PROVIDER_ID` is not required:
+
+```bash
+export IPPCP_DATASPACE=ippcp
+export IPPCP_FLOW=ingesta
+export IPPCP_FLOW_VERSION=v2
+export ASSET_CONFIG="asset_configs/real/ingesta/ingesta_api_pull_industrias_ebro_prod.json"
+# or: asset_configs/real/ingesta/ingesta_api_pull_circe_prod.json
+```
+
+Validated WFS layers. Select exactly one:
 
 ```bash
 export IPPCP_DATASPACE=ippcp
 export IPPCP_FLOW=consumo
 export IPPCP_FLOW_VERSION=v2
 export ASSET_CONFIG="asset_configs/real/consumo/wfs/emisiones_wfs_ciudad_geojson.json"
+# or: asset_configs/real/consumo/wfs/emisiones_wfs_juntas_geojson.json
 ```
 
-For the operational SPARQL resource:
+Validated SPARQL Results JSON configuration:
 
 ```bash
 export IPPCP_DATASPACE=ippcp
@@ -400,10 +421,12 @@ export ASSET_CONFIG="asset_configs/real/consumo/sparql/emisiones_sparql_limit10_
 
 ### Run the Ingestion API phases
 
-The Ingestion API secret is required only while phase 1 publishes the provider data address:
+The PRE GET block below loads the PRE secret file only while phase 1 publishes the provider data address. `INGESTA_API_KEY` and `INGESTA_API_PROVIDER_ID` are removed before phase 2 and are not inherited by phases 2–4.
+
+PROD POST uses the same phase sequence with `ingesta_api_key_prod.env` during phase 1 and does not require `INGESTA_API_PROVIDER_ID`. Phase 4 additionally requires `INGESTA_API_REQUEST_BODY_FILE`, a local company-specific body that is not versioned in Git. Use the company configuration selected above. The workshop owns the copy-paste PROD execution.
 
 ```bash
-run_ingestion_phases() {
+run_ingestion_pre_get_phases() {
   local bash_bin
   bash_bin="${BASH_BIN:-$(command -v bash)}"
 
@@ -429,15 +452,15 @@ run_ingestion_phases() {
   "${bash_bin}" scripts/phase4_save_download.sh || return 1
 }
 
-run_ingestion_phases
-unset -f run_ingestion_phases
+run_ingestion_pre_get_phases
+unset -f run_ingestion_pre_get_phases
 ```
 
-The API key and provider ID are removed before phase 2. They are not inherited by phases 2–4. See [Ingestion API](flows/ingestion-api.md) for the complete flow-specific configuration, validation, and error handling.
+See [Ingestion API](flows/ingestion-api.md) for the complete flow-specific configuration, validation, and error handling.
 
 ### Run the WFS or SPARQL phases
 
-After selecting the WFS or SPARQL resource:
+After selecting either validated WFS layer or the validated SPARQL configuration:
 
 ```bash
 BASH_BIN="${BASH_BIN:-$(command -v bash)}"
