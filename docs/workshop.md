@@ -1546,6 +1546,68 @@ find "$RUN_DIR" -type f \( -name '*.sensitive.json' -o -name '*.secret.json' \) 
 rg -n -i 'authorization|bearer|api[_-]?key|password|token|secret' "$RUN_DIR" || true
 ```
 
+## Inspect the DCAT catalogue
+
+This repository does not contain an independent service named Federated Catalogue. Zaragoza catalogue access is catalogue discovery between the EDC connectors.
+
+- Technical requester: `conn-company-ippcp`
+- Provider: `conn-citycouncil-ippcp`
+- Management API operation: `POST /management/v3/catalog/request`
+- Connector-to-connector protocol: `dataspace-protocol-http`
+
+The catalogue response exposes datasets as `dcat:dataset` or `http://www.w3.org/ns/dcat#dataset`.
+
+Phase 2 selects the dataset `@id`, the participant ID, and the offer policy from `hasPolicy` or `odrl:hasPolicy`. Contract negotiation uses those selected values.
+
+Phase 1 is the provider self-catalogue check. Phase 2 is remote catalogue discovery from the consumer.
+
+The sanitized Phase 2 request is:
+
+```json
+{
+  "@context": { "@vocab": "https://w3id.org/edc/v0.0.1/ns/" },
+  "@type": "CatalogRequest",
+  "counterPartyAddress": "<provider-protocol-url>",
+  "counterPartyId": "<provider-connector-id>",
+  "protocol": "dataspace-protocol-http",
+  "querySpec": {
+    "offset": 0,
+    "limit": 100,
+    "filterExpression": []
+  }
+}
+```
+
+After Phase 2, inspect these internal artifacts:
+
+```text
+evidencias/runs/<SUFFIX>/phase2/10_remote_catalog_request.json
+evidencias/runs/<SUFFIX>/phase2/selected_remote_catalog_dataset.json
+evidencias/runs/<SUFFIX>/phase2/selected_remote_offer_policy.json
+evidencias/runs/<SUFFIX>/phase2/20_selected_ids.json
+```
+
+List datasets only:
+
+```bash
+jq '
+  (.["dcat:dataset"] // .["http://www.w3.org/ns/dcat#dataset"])
+  | if type == "array" then . else [.] end
+  | map({
+      id: .["@id"],
+      hasPolicy: (
+        .hasPolicy
+        // .["odrl:hasPolicy"]
+        // .["http://www.w3.org/ns/odrl/2/hasPolicy"]
+      )
+    })
+' "evidencias/runs/${SUFFIX}/phase2/10_remote_catalog_request.json"
+```
+
+Running the complete Phase 2 script continues into contract negotiation. This section documents and inspects the catalogue discovery that Phase 2 already performs. It does not add a standalone catalogue operation.
+
+Raw Management API responses and execution artifacts are internal evidence. Do not share them externally without sanitization.
+
 ## 15. Full-run success validation
 
 Use the validator that matches the profile. A missing `phase4` must **never** pass as a complete PRE GET, Industrias Ebro PROD, WFS, or SPARQL run.
