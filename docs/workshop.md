@@ -49,7 +49,7 @@ MinIO Client (`mc`) is not required for the current `HttpData-PULL` assets in th
 All later commands run from the repository root unless a block says otherwise.
 
 ```bash
-git clone https://github.com/JPardo08/ippcp-API.git
+git clone https://github.com/IPPCP-project/ippcp-API.git
 cd ippcp-API
 ```
 

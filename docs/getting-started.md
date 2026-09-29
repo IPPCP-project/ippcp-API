@@ -44,7 +44,7 @@ The flow guides use `${BASH_BIN:-$(command -v bash)}` when `BASH_BIN` is not exp
 Clone the public repository:
 
 ```bash
-git clone https://github.com/JPardo08/ippcp-API.git
+git clone https://github.com/IPPCP-project/ippcp-API.git
 cd ippcp-API
 ```
 
