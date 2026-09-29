@@ -1548,12 +1548,26 @@ rg -n -i 'authorization|bearer|api[_-]?key|password|token|secret' "$RUN_DIR" || 
 
 ## Inspect the DCAT catalogue
 
-This repository does not contain an independent service named Federated Catalogue. Zaragoza catalogue access is catalogue discovery between the EDC connectors.
+This repository does not contain an independent Federated Catalogue service. The INESData connector runtime includes federated-catalog capabilities and a connector-local catalogue cache. The reproducible Zaragoza flow in this repository performs catalogue discovery directly between the consumer and provider EDC connectors through DSP.
 
-- Technical requester: `conn-company-ippcp`
-- Provider: `conn-citycouncil-ippcp`
-- Management API operation: `POST /management/v3/catalog/request`
-- Connector-to-connector protocol: `dataspace-protocol-http`
+`/management/federatedcatalog/request` belongs to that connector-local federated cache. It is not the Phase 2 path documented here.
+
+Direct catalogue discovery is the mechanism reproduced by this repository:
+
+- `conn-company-ippcp` calls `POST /management/v3/catalog/request`;
+- the connector performs the DSP exchange against `conn-citycouncil-ippcp/protocol`;
+- the response contains DCAT datasets;
+- Phase 2 uses this flow before contract negotiation.
+
+The INESData federated catalogue cache is functionality embedded in the runtime of each INESData connector:
+
+- it is not an independent service or deployment;
+- it uses the connector's federated-catalog extensions;
+- it discovers participants through the registration service;
+- it obtains their catalogues through DSP;
+- it exposes the cache through `/management/federatedcatalog/request`;
+- the public portal can consume that cache through its backend;
+- `phase2_consumer_negotiate.sh` does not execute this path.
 
 The catalogue response exposes datasets as `dcat:dataset` or `http://www.w3.org/ns/dcat#dataset`.
 
