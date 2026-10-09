@@ -416,8 +416,8 @@ def minimal_publication_summary_row(model: MinimalPublicationModel, spec=None) -
         "asset_type": model.asset_type,
         "provider_connector": model.technical_provider_connector,
         "consumer_connector": model.technical_consumer_connector,
-        "suffix": identifiers["run_id"],
-        "asset_id": identifiers["asset_id"],
+        "suffix": model.technical_evidence.get("run_id") or identifiers["run_id"],
+        "asset_id": model.technical_evidence.get("asset_id") or identifiers["asset_id"],
         "vocab_id": model.not_applicable,
         "access_policy_id": model.not_applicable,
         "contract_policy_id": model.not_applicable,
@@ -438,6 +438,8 @@ def minimal_publication_summary_row(model: MinimalPublicationModel, spec=None) -
         "notes": (
             f"{model.evidence_role}; "
             f"delivery_mode={model.delivery_mode}; "
+            f"provenance={model.technical_evidence.get('asset_provenance')}; "
+            f"evidence_type={model.technical_evidence.get('evidence_type')}; "
             f"semantic_validation={model.semantic_validation_status}"
             + (f"; {outcome_note}" if outcome_note else "")
         ),
@@ -513,7 +515,16 @@ def append_minimal_publication_sheet(
             ["sha256_verified", model.sha256_verified],
             ["sha256_value", model.sha256_value],
             ["payload_included", model.payload_included],
+            ["request_body_bytes", model.technical_evidence.get("request_body_bytes")],
+            ["response_body_bytes", model.technical_evidence.get("response_body_bytes")],
         ],
+        contract=contract,
+    )
+    append_table(
+        worksheet,
+        "Evidencia tecnica",
+        ["field", "value"],
+        [[key, value] for key, value in model.technical_evidence.items()],
         contract=contract,
     )
     append_table(

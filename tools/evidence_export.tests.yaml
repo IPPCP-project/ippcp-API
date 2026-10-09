@@ -65,8 +65,8 @@ expected_workflow_roles:
 assets:
   ingestion_api_v2:
     family: ingestion
-    variant: api_v2
-    display_name: Ingestion API v2
+    variant: pre_get
+    display_name: Ingestion API PRE GET
     sheet_slug: ingestion_api
     transport: HttpData-PULL
     critical: true
@@ -86,27 +86,107 @@ assets:
     asset_config: asset_configs/real/ingesta/ingesta_api_pull_pre_api_key.json
     validator: ingestion_api_v2
     match:
-      # PRE GET (existing) + PROD POST intake assets. Patterns are scoped to
-      # ippcp-ingesta-pull-*-prod / ippcp_ingesta_pull_*_prod and do not match WFS/SPARQL.
+      identity: pre_get
       asset_slugs:
         - ippcp_ingesta_api_pull_pre_api_key
-        - ippcp_ingesta_pull_industrias_ebro_prod
-        - ippcp_ingesta_pull_circe_prod
-      asset_slug_patterns:
-        - ippcp_ingesta_pull_*_prod
       asset_config_suffixes:
         - asset_configs/real/ingesta/ingesta_api_pull_pre_api_key.json
         - ingesta_api_pull_pre_api_key.json
-        - asset_configs/real/ingesta/ingesta_api_pull_industrias_ebro_prod.json
-        - ingesta_api_pull_industrias_ebro_prod.json
+      asset_id_prefixes:
+        - ippcp_ingesta_api_pull_pre_api_key-
+
+  ingestion_api_circe_prod:
+    family: ingestion
+    variant: circe
+    display_name: Ingestion API CIRCE PROD POST
+    sheet_slug: circe_prod
+    transport: HttpData-PULL
+    critical: true
+    publication_profile: minimal_publication
+    publication_safe: true
+    workflow: ingesta_api
+    asset_type: HttpData-PULL
+    evidence_role: additional_validation
+    expected_workflow_kind: b1
+    expected_phases: [phase0, phase1, phase2, phase3, phase4]
+    expected_content_kind: json
+    expected_extension: json
+    expected_media_type: application/json
+    expected_transfer_type: HttpData-PULL
+    technical_provider_connector: CONN-CITYCOUNCIL
+    technical_consumer_connector: CONN-COMPANY
+    asset_config: asset_configs/real/ingesta/ingesta_api_pull_circe_prod.json
+    validator: ingestion_api_v2
+    match:
+      identity: circe_stable
+      asset_slugs:
+        - ippcp_ingesta_pull_circe_prod
+      asset_config_suffixes:
         - asset_configs/real/ingesta/ingesta_api_pull_circe_prod.json
         - ingesta_api_pull_circe_prod.json
       asset_id_prefixes:
-        - ippcp_ingesta_api_pull_pre_api_key-
-        - ippcp-ingesta-pull-industrias-ebro-prod
         - ippcp-ingesta-pull-circe-prod
-      asset_id_patterns:
-        - ippcp-ingesta-pull-*-prod
+
+  ingestion_api_ebro_prod:
+    family: ingestion
+    variant: ebro
+    display_name: Ingestion API Ebro PROD POST
+    sheet_slug: ebro_prod
+    transport: HttpData-PULL
+    critical: true
+    publication_profile: minimal_publication
+    publication_safe: true
+    workflow: ingesta_api
+    asset_type: HttpData-PULL
+    evidence_role: additional_validation
+    expected_workflow_kind: b1
+    expected_phases: [phase0, phase1, phase2, phase3, phase4]
+    expected_content_kind: json
+    expected_extension: json
+    expected_media_type: application/json
+    expected_transfer_type: HttpData-PULL
+    technical_provider_connector: CONN-CITYCOUNCIL
+    technical_consumer_connector: CONN-COMPANY
+    asset_config: asset_configs/real/ingesta/ingesta_api_pull_industrias_ebro_prod.json
+    validator: ingestion_api_v2
+    match:
+      identity: ebro_stable
+      asset_slugs:
+        - ippcp_ingesta_pull_industrias_ebro_prod
+      asset_config_suffixes:
+        - asset_configs/real/ingesta/ingesta_api_pull_industrias_ebro_prod.json
+        - ingesta_api_pull_industrias_ebro_prod.json
+      asset_id_prefixes:
+        - ippcp-ingesta-pull-industrias-ebro-prod
+
+  ingestion_api_ebro_parallel:
+    family: ingestion
+    variant: ebro_parallel
+    display_name: Ingestion API Ebro parallel PROD POST
+    sheet_slug: ebro_parallel
+    transport: HttpData-PULL
+    critical: true
+    publication_profile: minimal_publication
+    publication_safe: true
+    workflow: ingesta_api
+    asset_type: HttpData-PULL
+    evidence_role: additional_validation
+    expected_workflow_kind: b1
+    expected_phases: [phase0, phase1, phase2, phase3, phase4]
+    expected_content_kind: json
+    expected_extension: json
+    expected_media_type: application/json
+    expected_transfer_type: HttpData-PULL
+    technical_provider_connector: CONN-CITYCOUNCIL
+    technical_consumer_connector: CONN-COMPANY
+    asset_config: asset_configs/real/ingesta/ingesta_api_pull_industrias_ebro_prod.json
+    validator: ingestion_api_v2
+    match:
+      identity: ebro_parallel
+      asset_slugs:
+        - ippcp_ingesta_pull_industrias_ebro_prod
+      asset_id_prefixes:
+        - ippcp_ingesta_pull_industrias_ebro_prod-
 
   csv_b2_legacy:
     family: ingestion
@@ -144,7 +224,7 @@ assets:
     sheet_slug: wfs_juntas
     transport: HttpData-PULL
     critical: false
-    publication_profile: standard
+    publication_profile: minimal_publication
     publication_safe: false
     workflow: consumo
     asset_type: HttpData
@@ -174,7 +254,7 @@ assets:
     sheet_slug: wfs_ciudad
     transport: HttpData-PULL
     critical: false
-    publication_profile: standard
+    publication_profile: minimal_publication
     publication_safe: false
     workflow: consumo
     asset_type: HttpData
@@ -204,7 +284,7 @@ assets:
     sheet_slug: sparql
     transport: HttpData-PULL
     critical: false
-    publication_profile: standard
+    publication_profile: minimal_publication
     publication_safe: false
     workflow: consumo
     asset_type: HttpData

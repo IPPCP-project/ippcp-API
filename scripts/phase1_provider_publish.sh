@@ -8,6 +8,11 @@
 #
 # Uso:
 #   /opt/homebrew/bin/bash scripts/phase1_provider_publish.sh
+#
+# IPPCP_PHASE1_REUSE_EXISTING=1
+#   Opt-in, desactivado por defecto. Solo los dos perfiles PROD POST estables.
+#   Verifica el asset y el contrato ya publicados. No crea ni actualiza objetos.
+#   proxyMethod no sustituye a method=POST.
 
 set -euo pipefail
 [[ $- != *x* ]] || set +x
@@ -609,15 +614,26 @@ _phase1_load_asset_config() {
     if [[ -n "${config_provider_id}" ]]; then
       [[ "${config_provider_id}" =~ ^[0-9]+$ ]] \
         || lib_die "ASSET_CONFIG: provider_id debe ser numérico (recibido: ${config_provider_id})"
-      # Config-embedded provider_id wins; ignore any stale INGESTA_API_PROVIDER_ID.
+      if [[ -n "${ASSET_PROVIDER_ID:-}" && "${ASSET_PROVIDER_ID}" != "${config_provider_id}" ]]; then
+        lib_die "ASSET_PROVIDER_ID del entorno no coincide con provider_id de ASSET_CONFIG"
+      fi
+      if [[ -n "${INGESTA_API_PROVIDER_ID:-}" && "${INGESTA_API_PROVIDER_ID}" != "${config_provider_id}" ]]; then
+        lib_die "INGESTA_API_PROVIDER_ID no coincide con provider_id de ASSET_CONFIG"
+      fi
       ASSET_PROVIDER_ID="${config_provider_id}"
     else
       _phase1_validate_provider_id_header_env
+      if [[ -n "${ASSET_PROVIDER_ID:-}" && "${ASSET_PROVIDER_ID}" != "${INGESTA_API_PROVIDER_ID}" ]]; then
+        lib_die "ASSET_PROVIDER_ID del entorno no coincide con INGESTA_API_PROVIDER_ID"
+      fi
       ASSET_PROVIDER_ID="${INGESTA_API_PROVIDER_ID}"
     fi
     ASSET_REQUIRES_PROVIDER_ID_HEADER=1
   else
     ASSET_REQUIRES_PROVIDER_ID_HEADER=0
+    if [[ -n "${config_provider_id}" ]]; then
+      lib_die "ASSET_CONFIG declara provider_id sin requires_provider_id_header"
+    fi
     ASSET_PROVIDER_ID=""
   fi
 
@@ -724,6 +740,450 @@ _phase1_append_context_field() {
   fi
 }
 
+_phase1_reuse_existing_enabled() {
+  [[ "${IPPCP_PHASE1_REUSE_EXISTING:-0}" == "1" ]]
+}
+
+_phase1_selected_mode() {
+  if _phase1_reuse_existing_enabled; then
+    printf 'reuse\n'
+  else
+    printf 'publish\n'
+  fi
+}
+
+_phase1_assert_reuse_profile_allowed() {
+  _phase1_reuse_existing_enabled \
+    || lib_die "verificación de asset existente exige IPPCP_PHASE1_REUSE_EXISTING=1"
+
+  case "${ASSET_ID:-}" in
+    ippcp-ingesta-pull-industrias-ebro-prod|ippcp-ingesta-pull-circe-prod)
+      ;;
+    *)
+      lib_die "IPPCP_PHASE1_REUSE_EXISTING solo admite los assets PROD POST estables de Industrias Ebro y CIRCE"
+      ;;
+  esac
+
+  [[ "${ASSET_HTTP_METHOD:-}" == "POST" ]] \
+    || lib_die "IPPCP_PHASE1_REUSE_EXISTING exige ASSET_HTTP_METHOD=POST en el perfil seleccionado"
+  [[ "${ASSET_PROXY_BODY:-}" == "1" ]] \
+    || lib_die "IPPCP_PHASE1_REUSE_EXISTING exige proxy_body en el perfil seleccionado"
+  [[ "${ASSET_REQUIRES_API_KEY_HEADER:-0}" == "1" ]] \
+    || lib_die "IPPCP_PHASE1_REUSE_EXISTING exige requires_api_key_header en el perfil seleccionado"
+
+  case "${ASSET_ID}:${ASSET_PROVIDER_ID:-}" in
+    ippcp-ingesta-pull-industrias-ebro-prod:1|ippcp-ingesta-pull-circe-prod:2)
+      ;;
+    *)
+      lib_die "provider id del perfil no coincide con el asset PROD seleccionado"
+      ;;
+  esac
+}
+
+_phase1_verify_published_asset_file() {
+  local asset_file="$1"
+
+  [[ -f "${asset_file}" ]] || lib_die "asset existente no recuperado"
+  jq empty "${asset_file}" >/dev/null 2>&1 \
+    || lib_die "respuesta de asset no es JSON válido"
+
+  if ! jq -e --arg id "${ASSET_ID}" '."@id" == $id' "${asset_file}" >/dev/null 2>&1; then
+    lib_die "asset id publicado no coincide con el identificador solicitado"
+  fi
+
+  if ! jq -e '
+    (.dataAddress.type // .dataAddress."@type" // .dataAddress."edc:type" // "") == "HttpData"
+  ' "${asset_file}" >/dev/null 2>&1; then
+    lib_die "asset publicado no es HttpData"
+  fi
+
+  if ! jq -e '
+    .dataAddress as $d
+    | ($d | type) == "object"
+    | . and (
+        ($d | has("method") and (($d.method | type) == "string") and ($d.method | length) > 0)
+        or ($d | has("edc:method") and (($d."edc:method" | type) == "string") and ($d."edc:method" | length) > 0)
+      )
+  ' "${asset_file}" >/dev/null 2>&1; then
+    lib_die "asset publicado no declara method=POST; proxyMethod no sustituye a method"
+  fi
+
+  if ! jq -e '
+    ((.dataAddress.method // .dataAddress."edc:method" // "") == "POST")
+  ' "${asset_file}" >/dev/null 2>&1; then
+    lib_die "asset publicado method distinto de POST; proxyMethod no sustituye a method"
+  fi
+
+  if ! jq -e '
+    (.dataAddress.proxyBody // .dataAddress."edc:proxyBody" // null)
+    | . == true or . == "true" or . == 1 or . == "1"
+  ' "${asset_file}" >/dev/null 2>&1; then
+    lib_die "asset publicado no tiene proxyBody habilitado"
+  fi
+
+  if ! jq -e --arg provider "${ASSET_PROVIDER_ID}" '
+    ((.dataAddress["header:X-Provider-Id"] // "") | tostring) == $provider
+  ' "${asset_file}" >/dev/null 2>&1; then
+    lib_die "provider id publicado no coincide con el perfil"
+  fi
+
+  if ! jq -e '
+    (.dataAddress | type) == "object"
+    and (.dataAddress | has("header:X-Api-Key"))
+    and (.dataAddress["header:X-Api-Key"] | type == "string" and length > 0)
+  ' "${asset_file}" >/dev/null 2>&1; then
+    lib_die "asset publicado no incluye la configuración del header de API key"
+  fi
+}
+
+_phase1_contract_selector_filter='
+  def targets_asset($id):
+    (.assetsSelector // [])
+    | if type == "array" then . else [.] end
+    | any(
+        (.operandRight == $id)
+        and (.operator == "=")
+        and ((.operandLeft | tostring) | test("/id$"))
+      );
+'
+
+_phase1_select_unique_contract_file() {
+  local list_file="$1"
+  local output_file="$2"
+  local tmp="${output_file}.$$"
+  local count
+
+  [[ -f "${list_file}" ]] || lib_die "listado de contract definitions ausente"
+  jq empty "${list_file}" >/dev/null 2>&1 \
+    || lib_die "listado de contract definitions no es JSON válido"
+  jq -e 'type == "array"' "${list_file}" >/dev/null 2>&1 \
+    || lib_die "listado de contract definitions no es un array"
+
+  count="$(
+    jq -r --arg id "${ASSET_ID}" "${_phase1_contract_selector_filter}"'
+      [ .[] | select(targets_asset($id)) ] | length
+    ' "${list_file}"
+  )"
+
+  if [[ "${count}" == "0" ]]; then
+    lib_die "no hay una contract definition cuyo selector apunte al asset"
+  fi
+  if [[ "${count}" != "1" ]]; then
+    lib_die "contract definition ambigua: hay más de un selector para el asset"
+  fi
+
+  jq --arg id "${ASSET_ID}" "${_phase1_contract_selector_filter}"'
+    [ .[] | select(targets_asset($id)) ][0]
+  ' "${list_file}" > "${tmp}"
+
+  if ! jq -e '
+    (."@id" | type == "string" and length > 0)
+    and (.accessPolicyId | type == "string" and length > 0)
+    and (.contractPolicyId | type == "string" and length > 0)
+  ' "${tmp}" >/dev/null 2>&1; then
+    rm -f "${tmp}"
+    lib_die "contract definition sin identificadores de política o de contrato"
+  fi
+
+  mv "${tmp}" "${output_file}"
+}
+
+_phase1_verify_policy_document() {
+  local policy_file="$1"
+  local expected_id="$2"
+
+  [[ -f "${policy_file}" ]] || lib_die "policy definition no recuperada"
+  jq empty "${policy_file}" >/dev/null 2>&1 \
+    || lib_die "policy definition no es JSON válido"
+  jq -e --arg id "${expected_id}" '."@id" == $id' "${policy_file}" >/dev/null 2>&1 \
+    || lib_die "policy definition no coincide con el identificador del contrato"
+}
+
+_phase1_commit_verified_ids() {
+  local cd_id="$1"
+  local access_id="$2"
+  local contract_id="$3"
+
+  [[ -n "${cd_id}" && -n "${access_id}" && -n "${contract_id}" ]] \
+    || lib_die "identificadores verificados incompletos"
+  [[ -n "${SUFFIX:-}" && -n "${ASSET_ID:-}" ]] \
+    || lib_die "SUFFIX o ASSET_ID vacío al cerrar la verificación"
+
+  export CD_ID="${cd_id}"
+  export ACCESS_POLICY_ID="${access_id}"
+  export CONTRACT_POLICY_ID="${contract_id}"
+  export ASSET_ID_CUSTOM=1
+  export IPPCP_PHASE1_REUSE_EXISTING=1
+  export PHASE1_REUSE_IDS_VERIFIED=1
+  export PHASE1_REUSE_SUFFIX="${SUFFIX}"
+  export PHASE1_REUSE_ASSET_ID="${ASSET_ID}"
+  export PHASE1_ASSET_ORIGIN=verified_existing
+}
+
+_phase1_write_context_file() {
+  local context_file="${PHASE1_DIR}/00_context.txt"
+  local context_tmp="${context_file}.$$"
+  {
+    printf 'Fecha: %s\n' "$(date)"
+    printf 'API_ROOT=%s\n' "${API_ROOT}"
+    printf 'SUFFIX=%s\n' "${SUFFIX}"
+    printf 'RUN_DIR=%s\n' "${RUN_DIR}"
+    printf 'DS_NAME=%s\n' "${DS_NAME}"
+    printf 'PROVIDER=%s\n' "${PROVIDER}"
+    printf 'PROVIDER_BASE=%s\n' "${PROVIDER_BASE}"
+    printf 'PROVIDER_PROTOCOL=%s\n' "${PROVIDER_PROTOCOL}"
+    printf 'VOCAB_ID=%s\n' "${VOCAB_ID:-}"
+    printf 'ACCESS_POLICY_ID=%s\n' "${ACCESS_POLICY_ID:-}"
+    printf 'CONTRACT_POLICY_ID=%s\n' "${CONTRACT_POLICY_ID:-}"
+    printf 'ASSET_ID=%s\n' "${ASSET_ID}"
+    printf 'CD_ID=%s\n' "${CD_ID:-}"
+    _phase1_append_context_field ASSET_CONFIG "${ASSET_CONFIG:-}"
+    _phase1_append_context_field ASSET_SLUG "${ASSET_SLUG:-}"
+    _phase1_append_context_field ASSET_NAME "${ASSET_NAME:-}"
+    _phase1_append_context_field ASSET_BASE_URL "${ASSET_BASE_URL:-}"
+    _phase1_append_context_field ASSET_CONTENT_KIND "${ASSET_CONTENT_KIND:-}"
+    _phase1_append_context_field ASSET_EXTENSION "${ASSET_EXTENSION:-}"
+    _phase1_append_context_field ASSET_MEDIA_TYPE "${ASSET_MEDIA_TYPE:-}"
+    _phase1_append_context_field ASSET_HTTP_METHOD "${ASSET_HTTP_METHOD:-}"
+    _phase1_append_context_field ASSET_PROXY_BODY "${ASSET_PROXY_BODY:-}"
+    _phase1_append_context_field ASSET_REQUIRES_PROVIDER_ID_HEADER "${ASSET_REQUIRES_PROVIDER_ID_HEADER:-}"
+    _phase1_append_context_field ASSET_REQUIRES_API_KEY_HEADER "${ASSET_REQUIRES_API_KEY_HEADER:-}"
+    _phase1_append_context_field PHASE1_ASSET_ORIGIN "${PHASE1_ASSET_ORIGIN:-}"
+    _phase1_append_context_field IPPCP_PHASE1_REUSE_EXISTING "${IPPCP_PHASE1_REUSE_EXISTING:-}"
+  } > "${context_tmp}"
+  mv "${context_tmp}" "${context_file}"
+}
+
+_phase1_summary_ok() {
+  [[ "${PHASE1_REUSE_WRITE_SUMMARY:-0}" == "1" ]] || return 0
+  lib_write_summary "$@"
+}
+
+_phase1_run_self_catalog_check() {
+  local catalog_request selected_dataset selected_offer catalog_http
+
+  PHASE1_STEP="self_catalog"
+  catalog_request="${PHASE1_DIR}/17_self_catalog_request_body.json"
+  _phase1_write_json "${catalog_request}" <<EOF
+{
+  "@context": { "@vocab": "https://w3id.org/edc/v0.0.1/ns/" },
+  "@type": "CatalogRequest",
+  "counterPartyAddress": "${PROVIDER_PROTOCOL}",
+  "counterPartyId": "${PROVIDER}",
+  "protocol": "dataspace-protocol-http",
+  "querySpec": {
+    "offset": 0,
+    "limit": 50,
+    "filterExpression": [
+      {
+        "operandLeft": "https://w3id.org/edc/v0.0.1/ns/id",
+        "operator": "=",
+        "operandRight": "${ASSET_ID}"
+      }
+    ]
+  }
+}
+EOF
+
+  _phase1_curl_json_redacted "${PHASE1_DIR}/17_self_catalog_request" \
+    -X POST "${PROVIDER_BASE}/management/v3/catalog/request" \
+    -H "Authorization: Bearer ${PROVIDER_JWT}" \
+    -H "Content-Type: application/json" \
+    -d "@${catalog_request}"
+
+  catalog_http="$(tr -d '\n' < "${PHASE1_DIR}/17_self_catalog_request.http")"
+  if [[ "${PHASE1_SUPPRESS_SUMMARY:-0}" != "1" ]]; then
+    lib_write_summary 1 self_catalog ok \
+      "{\"http\":${catalog_http},\"asset_id\":\"${ASSET_ID}\",\"artifact\":\"phase1/17_self_catalog_request\"}"
+  fi
+
+  PHASE1_STEP="catalog_asset_found"
+  selected_dataset="${PHASE1_DIR}/selected_self_catalog_dataset.json"
+  selected_offer="${PHASE1_DIR}/selected_self_offer_policy.json"
+
+  _phase1_extract_catalog_dataset \
+    "${PHASE1_DIR}/17_self_catalog_request.json" \
+    "${selected_dataset}"
+  _phase1_assert_no_sensitive_artifact "${selected_dataset}"
+
+  _phase1_extract_offer_policy "${selected_dataset}" "${selected_offer}"
+  _phase1_validate_offer_policy "${selected_offer}"
+
+  if [[ "${PHASE1_SUPPRESS_SUMMARY:-0}" != "1" ]]; then
+    lib_write_summary 1 catalog_asset_found ok \
+      "{\"artifact\":\"phase1/selected_self_catalog_dataset.json\",\"offer_artifact\":\"phase1/selected_self_offer_policy.json\"}"
+  fi
+}
+
+_phase1_query_existing_contracts() {
+  local combined="${PHASE1_DIR}/16_contract_definitions_scanned.json"
+  local tmp_all="${PHASE1_DIR}/.cd_scan.json"
+  local offset=0
+  local limit=50
+  local page_count=0
+  local page_len=0
+  local body base http
+
+  printf '%s\n' '[]' > "${tmp_all}"
+
+  while (( page_count < 40 )); do
+    body="$(
+      jq -nc --argjson offset "${offset}" --argjson limit "${limit}" \
+        '{
+          "@context": {"@vocab": "https://w3id.org/edc/v0.0.1/ns/"},
+          offset: $offset,
+          limit: $limit,
+          filterExpression: []
+        }'
+    )"
+    base="${PHASE1_DIR}/16_cd_query_${offset}"
+    if ! _phase1_curl_json_redacted "${base}" \
+      -X POST "${PROVIDER_BASE}${ENDPOINTS[contractDefinition]}" \
+      -H "Authorization: Bearer ${PROVIDER_JWT}" \
+      -H "Content-Type: application/json" \
+      -d "${body}"; then
+      lib_die "consulta de solo lectura de contract definitions falló"
+    fi
+    http="$(tr -d '\n\r' < "${base}.http")"
+    [[ "${http}" =~ ^2[0-9]{2}$ ]] \
+      || lib_die "consulta de contract definitions HTTP ${http}"
+    page_len="$(jq -r 'if type == "array" then length else -1 end' "${base}.json")"
+    [[ "${page_len}" =~ ^[0-9]+$ ]] \
+      || lib_die "respuesta de contract definitions no es un array"
+    jq -s '.[0] + .[1]' "${tmp_all}" "${base}.json" > "${tmp_all}.next"
+    mv "${tmp_all}.next" "${tmp_all}"
+    page_count=$((page_count + 1))
+    if (( page_len < limit )); then
+      break
+    fi
+    offset=$((offset + limit))
+  done
+
+  if (( page_count >= 40 )) && (( page_len >= limit )); then
+    lib_die "contract definitions incompletas; no se puede determinar un único contrato"
+  fi
+
+  mv "${tmp_all}" "${combined}"
+}
+
+_phase1_run_existing_asset_verification() {
+  local asset_http raw_asset asset_doc cd_file access_id contract_id policy_base
+  local cd_http access_http contract_http
+
+  _phase1_assert_reuse_profile_allowed
+  [[ -n "${ENDPOINTS[contractDefinition]:-}" ]] \
+    || lib_die "ENDPOINTS[contractDefinition] no definido"
+  [[ -n "${PHASE1_DIR:-}" ]] || lib_die "PHASE1_DIR no definido"
+
+  PHASE1_STEP="verify_existing_asset"
+  if ! _phase1_curl_json_redacted "${PHASE1_DIR}/14_get_asset" \
+    -X GET "${PROVIDER_BASE}/management/v3/assets/${ASSET_ID}" \
+    -H "Authorization: Bearer ${PROVIDER_JWT}"; then
+    lib_die "asset existente no encontrado"
+  fi
+  asset_http="$(tr -d '\n\r' < "${PHASE1_DIR}/14_get_asset.http")"
+  [[ "${asset_http}" =~ ^2[0-9]{2}$ ]] \
+    || lib_die "asset existente no encontrado"
+  raw_asset="${PHASE1_SENSITIVE_TMP_DIR:-}/14_get_asset.json"
+  if [[ -f "${raw_asset}" ]]; then
+    asset_doc="${raw_asset}"
+  else
+    asset_doc="${PHASE1_DIR}/14_get_asset.json"
+  fi
+  _phase1_verify_published_asset_file "${asset_doc}"
+  _phase1_assert_no_sensitive_artifact "${PHASE1_DIR}/14_get_asset.json"
+  _phase1_summary_ok 1 verify_existing_asset ok \
+    "{\"http\":${asset_http},\"asset_origin\":\"verified_existing\",\"published_this_run\":false,\"artifact\":\"phase1/14_get_asset\"}"
+
+  PHASE1_STEP="verify_contract_definition"
+  _phase1_query_existing_contracts
+  cd_file="${PHASE1_DIR}/16_selected_contract_definition.json"
+  _phase1_select_unique_contract_file \
+    "${PHASE1_DIR}/16_contract_definitions_scanned.json" \
+    "${cd_file}"
+  CD_ID="$(jq -r '."@id"' "${cd_file}")"
+  access_id="$(jq -r '.accessPolicyId' "${cd_file}")"
+  contract_id="$(jq -r '.contractPolicyId' "${cd_file}")"
+
+  if ! _phase1_curl_json_redacted "${PHASE1_DIR}/16_get_contract_definition" \
+    -X GET "${PROVIDER_BASE}/management/v3/contractdefinitions/${CD_ID}" \
+    -H "Authorization: Bearer ${PROVIDER_JWT}"; then
+    lib_die "GET contract definition existente falló"
+  fi
+  cd_http="$(tr -d '\n\r' < "${PHASE1_DIR}/16_get_contract_definition.http")"
+  [[ "${cd_http}" =~ ^2[0-9]{2}$ ]] \
+    || lib_die "GET contract definition existente HTTP ${cd_http}"
+  if ! jq -e --arg id "${CD_ID}" '."@id" == $id' \
+    "${PHASE1_DIR}/16_get_contract_definition.json" >/dev/null; then
+    lib_die "Contract definition existente no coincide con @id de la respuesta GET"
+  fi
+  jq -c '[.]' "${PHASE1_DIR}/16_get_contract_definition.json" \
+    > "${PHASE1_DIR}/16_get_contract_definition_as_array.json"
+  _phase1_select_unique_contract_file \
+    "${PHASE1_DIR}/16_get_contract_definition_as_array.json" \
+    "${PHASE1_DIR}/16_selected_contract_definition_get.json"
+  _phase1_summary_ok 1 get_contract_definition ok \
+    "{\"http\":${cd_http},\"asset_origin\":\"verified_existing\",\"artifact\":\"phase1/16_get_contract_definition\"}"
+  _phase1_summary_ok 1 verify_contract_definition ok \
+    "{\"http\":${cd_http},\"published_this_run\":false,\"create_contract_definition\":\"not_executed\"}"
+
+  PHASE1_STEP="verify_contract_policies"
+  policy_base="${PHASE1_DIR}/16_get_access_policy"
+  if ! _phase1_curl_json_redacted "${policy_base}" \
+    -X GET "${PROVIDER_BASE}/management/v3/policydefinitions/${access_id}" \
+    -H "Authorization: Bearer ${PROVIDER_JWT}"; then
+    lib_die "access policy existente no encontrada"
+  fi
+  access_http="$(tr -d '\n\r' < "${policy_base}.http")"
+  [[ "${access_http}" =~ ^2[0-9]{2}$ ]] || lib_die "access policy existente no encontrada"
+  _phase1_verify_policy_document "${policy_base}.json" "${access_id}"
+
+  policy_base="${PHASE1_DIR}/16_get_contract_policy"
+  if ! _phase1_curl_json_redacted "${policy_base}" \
+    -X GET "${PROVIDER_BASE}/management/v3/policydefinitions/${contract_id}" \
+    -H "Authorization: Bearer ${PROVIDER_JWT}"; then
+    lib_die "contract policy existente no encontrada"
+  fi
+  contract_http="$(tr -d '\n\r' < "${policy_base}.http")"
+  [[ "${contract_http}" =~ ^2[0-9]{2}$ ]] || lib_die "contract policy existente no encontrada"
+  _phase1_verify_policy_document "${policy_base}.json" "${contract_id}"
+  _phase1_summary_ok 1 verify_contract_policies ok \
+    "{\"access_http\":${access_http},\"contract_http\":${contract_http},\"published_this_run\":false}"
+
+  _phase1_run_self_catalog_check
+
+  _phase1_commit_verified_ids "${CD_ID}" "${access_id}" "${contract_id}"
+
+  jq -n \
+    --arg asset_id "${ASSET_ID}" \
+    --arg cd_id "${CD_ID}" \
+    --arg access_id "${access_id}" \
+    --arg contract_id "${contract_id}" \
+    --arg suffix "${SUFFIX}" \
+    '{
+      mode: "existing_asset_verification",
+      asset_origin: "verified_existing",
+      published_this_run: false,
+      suffix: $suffix,
+      asset_id: $asset_id,
+      contract_definition_id: $cd_id,
+      access_policy_id: $access_id,
+      contract_policy_id: $contract_id,
+      method_post: true,
+      proxy_body_enabled: true,
+      provider_id_match: true,
+      api_key_header_present: true,
+      catalog_asset_id_filter: true,
+      offer_use_without_obligations_or_prohibitions: true,
+      create_asset: "not_executed",
+      create_vocabulary: "not_executed",
+      create_access_policy: "not_executed",
+      create_contract_policy: "not_executed",
+      create_contract_definition: "not_executed"
+    }' > "${PHASE1_DIR}/existing_asset_verification.json"
+  _phase1_assert_no_sensitive_artifact "${PHASE1_DIR}/existing_asset_verification.json"
+}
+
 # ---------------------------------------------------------------------------
 # Bootstrap + init
 # ---------------------------------------------------------------------------
@@ -755,6 +1215,10 @@ lib_require_vars SUFFIX
 PHASE1_STEP="load_asset_config"
 _phase1_load_asset_config
 
+if _phase1_reuse_existing_enabled; then
+  _phase1_assert_reuse_profile_allowed
+fi
+
 lib_init_run_dirs
 lib_init_summary
 
@@ -778,35 +1242,7 @@ PHASE1_STEP="derive_ids"
 lib_derive_phase1_ids
 
 PHASE1_STEP="write_context"
-context_file="${PHASE1_DIR}/00_context.txt"
-context_tmp="${context_file}.$$"
-{
-  printf 'Fecha: %s\n' "$(date)"
-  printf 'API_ROOT=%s\n' "${API_ROOT}"
-  printf 'SUFFIX=%s\n' "${SUFFIX}"
-  printf 'RUN_DIR=%s\n' "${RUN_DIR}"
-  printf 'DS_NAME=%s\n' "${DS_NAME}"
-  printf 'PROVIDER=%s\n' "${PROVIDER}"
-  printf 'PROVIDER_BASE=%s\n' "${PROVIDER_BASE}"
-  printf 'PROVIDER_PROTOCOL=%s\n' "${PROVIDER_PROTOCOL}"
-  printf 'VOCAB_ID=%s\n' "${VOCAB_ID}"
-  printf 'ACCESS_POLICY_ID=%s\n' "${ACCESS_POLICY_ID}"
-  printf 'CONTRACT_POLICY_ID=%s\n' "${CONTRACT_POLICY_ID}"
-  printf 'ASSET_ID=%s\n' "${ASSET_ID}"
-  printf 'CD_ID=%s\n' "${CD_ID}"
-  _phase1_append_context_field ASSET_CONFIG "${ASSET_CONFIG:-}"
-  _phase1_append_context_field ASSET_SLUG "${ASSET_SLUG:-}"
-  _phase1_append_context_field ASSET_NAME "${ASSET_NAME:-}"
-  _phase1_append_context_field ASSET_BASE_URL "${ASSET_BASE_URL:-}"
-  _phase1_append_context_field ASSET_CONTENT_KIND "${ASSET_CONTENT_KIND:-}"
-  _phase1_append_context_field ASSET_EXTENSION "${ASSET_EXTENSION:-}"
-  _phase1_append_context_field ASSET_MEDIA_TYPE "${ASSET_MEDIA_TYPE:-}"
-  _phase1_append_context_field ASSET_HTTP_METHOD "${ASSET_HTTP_METHOD:-}"
-  _phase1_append_context_field ASSET_PROXY_BODY "${ASSET_PROXY_BODY:-}"
-  _phase1_append_context_field ASSET_REQUIRES_PROVIDER_ID_HEADER "${ASSET_REQUIRES_PROVIDER_ID_HEADER:-}"
-  _phase1_append_context_field ASSET_REQUIRES_API_KEY_HEADER "${ASSET_REQUIRES_API_KEY_HEADER:-}"
-} > "${context_tmp}"
-mv "${context_tmp}" "${context_file}"
+_phase1_write_context_file
 
 # ---------------------------------------------------------------------------
 # Listados iniciales
@@ -818,8 +1254,15 @@ _phase1_list_and_summary "03_initial_contracts" "contractDefinition" "initial_co
 _phase1_list_and_summary "04_initial_vocabularies" "vocabulary" "initial_vocabularies" "${VOCAB_LIST_BODY}"
 
 # ---------------------------------------------------------------------------
-# Creaciones (payload guardado como *_request.json, curl con -d @file)
+# Creaciones, o verificación de solo lectura si el modo existente está activo.
+# El camino de publicación no cambia cuando el flag está apagado.
 # ---------------------------------------------------------------------------
+
+if _phase1_reuse_existing_enabled; then
+  PHASE1_REUSE_WRITE_SUMMARY=1
+  _phase1_run_existing_asset_verification
+  _phase1_write_context_file
+else
 
 PHASE1_STEP="create_vocabulary"
 vocab_request="${PHASE1_DIR}/10_create_vocabulary_request.json"
@@ -975,61 +1418,36 @@ EOF
 _phase1_create_and_summary "15_create_contract_definition" "create_contract_definition" "${cd_request}" "{}" \
   -X POST "${PROVIDER_BASE}/management/v3/contractdefinitions"
 
-PHASE1_STEP="list_contract_definitions"
-lib_curl_json "${PHASE1_DIR}/16_list_contract_definitions" \
-  -X POST "${PROVIDER_BASE}${ENDPOINTS[contractDefinition]}" \
-  -H "Authorization: Bearer ${PROVIDER_JWT}" \
-  -H "Content-Type: application/json" \
-  -d "${REQUEST_LIST_BODY}"
-
-jq -e --arg id "${CD_ID}" '.[] | select(."@id" == $id)' \
-  "${PHASE1_DIR}/16_list_contract_definitions.json" >/dev/null \
-  || lib_die "Contract definition ${CD_ID} no encontrada en listado"
-
-list_cd_http="$(tr -d '\n' < "${PHASE1_DIR}/16_list_contract_definitions.http")"
-lib_write_summary 1 list_contract_definitions ok \
-  "{\"http\":${list_cd_http},\"artifact\":\"phase1/16_list_contract_definitions\"}"
+PHASE1_STEP="get_contract_definition"
+if ! _phase1_curl_json_redacted "${PHASE1_DIR}/16_get_contract_definition" \
+  -X GET "${PROVIDER_BASE}/management/v3/contractdefinitions/${CD_ID}" \
+  -H "Authorization: Bearer ${PROVIDER_JWT}"; then
+  lib_die "GET contract definition ${CD_ID} falló"
+fi
+get_cd_http="$(tr -d '\n' < "${PHASE1_DIR}/16_get_contract_definition.http")"
+[[ "${get_cd_http}" =~ ^2[0-9]{2}$ ]] \
+  || lib_die "GET contract definition ${CD_ID} HTTP ${get_cd_http}"
+if ! jq -e --arg id "${CD_ID}" '."@id" == $id' \
+  "${PHASE1_DIR}/16_get_contract_definition.json" >/dev/null; then
+  lib_die "Contract definition ${CD_ID} no coincide con @id de la respuesta GET"
+fi
+lib_write_summary 1 get_contract_definition ok \
+  "{\"http\":${get_cd_http},\"artifact\":\"phase1/16_get_contract_definition\"}"
+_phase1_assert_no_sensitive_artifact "${PHASE1_DIR}/16_get_contract_definition.json"
+_phase1_assert_no_sensitive_artifact "${RUN_DIR}/summary.json"
 
 # ---------------------------------------------------------------------------
 # Catálogo local (self-check)
 # ---------------------------------------------------------------------------
 
-PHASE1_STEP="self_catalog"
-catalog_request="${PHASE1_DIR}/17_self_catalog_request_body.json"
-_phase1_write_json "${catalog_request}" <<EOF
-{
-  "@context": { "@vocab": "https://w3id.org/edc/v0.0.1/ns/" },
-  "@type": "CatalogRequest",
-  "counterPartyAddress": "${PROVIDER_PROTOCOL}",
-  "counterPartyId": "${PROVIDER}",
-  "protocol": "dataspace-protocol-http"
-}
-EOF
+_phase1_run_self_catalog_check
+export PHASE1_ASSET_ORIGIN=published_this_run
 
-_phase1_curl_json_redacted "${PHASE1_DIR}/17_self_catalog_request" \
-  -X POST "${PROVIDER_BASE}/management/v3/catalog/request" \
-  -H "Authorization: Bearer ${PROVIDER_JWT}" \
-  -H "Content-Type: application/json" \
-  -d "@${catalog_request}"
+fi
 
-catalog_http="$(tr -d '\n' < "${PHASE1_DIR}/17_self_catalog_request.http")"
-lib_write_summary 1 self_catalog ok \
-  "{\"http\":${catalog_http},\"asset_id\":\"${ASSET_ID}\",\"artifact\":\"phase1/17_self_catalog_request\"}"
-
-PHASE1_STEP="catalog_asset_found"
-selected_dataset="${PHASE1_DIR}/selected_self_catalog_dataset.json"
-selected_offer="${PHASE1_DIR}/selected_self_offer_policy.json"
-
-_phase1_extract_catalog_dataset \
-  "${PHASE1_DIR}/17_self_catalog_request.json" \
-  "${selected_dataset}"
-_phase1_assert_no_sensitive_artifact "${selected_dataset}"
-
-_phase1_extract_offer_policy "${selected_dataset}" "${selected_offer}"
-_phase1_validate_offer_policy "${selected_offer}"
-
-lib_write_summary 1 catalog_asset_found ok \
-  "{\"artifact\":\"phase1/selected_self_catalog_dataset.json\",\"offer_artifact\":\"phase1/selected_self_offer_policy.json\"}"
+if _lib_phase1_reuse_ids_are_current; then
+  export PHASE1_ASSET_ORIGIN=verified_existing
+fi
 
 # ---------------------------------------------------------------------------
 # Listados finales
@@ -1045,6 +1463,11 @@ _phase1_list_and_summary "24_final_vocabularies" "vocabulary" "final_vocabularie
 # ---------------------------------------------------------------------------
 
 PHASE1_STEP="export_env"
+if _lib_phase1_reuse_ids_are_current; then
+  export PHASE1_ASSET_ORIGIN=verified_existing
+else
+  export PHASE1_ASSET_ORIGIN=published_this_run
+fi
 lib_export_phase_env 1
 _phase1_assert_no_sensitive_artifact "${RUN_DIR}/phase1_env.sh"
 _phase1_assert_no_sensitive_artifact "$(lib_phase_env_path 1)"

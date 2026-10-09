@@ -133,7 +133,7 @@ class EvidenceSlotAssetTest(unittest.TestCase):
                 self.assertEqual([row["asset_key"] for row in inventory], order)
                 status = json.loads(archive.read("ippcp_evidence_package/package_status.json"))
                 self.assertFalse(status["publication_ready"])
-                self.assertIn("slot T2 uses standard_internal", status["publication_blockers"])
+                self.assertIn("slot T2 uses minimal_publication_internal", status["publication_blockers"])
                 self.assertFalse(
                     any("critical asset" in blocker for blocker in status["publication_blockers"])
                 )
@@ -214,7 +214,7 @@ class EvidenceSlotAssetTest(unittest.TestCase):
             row = self.slot_map(output)[0]
             self.assertEqual(row["slot"], "T1")
             self.assertEqual(row["asset_key"], "wfs_ciudad")
-            self.assertEqual(row["publication_profile"], "standard")
+            self.assertEqual(row["publication_profile"], "minimal_publication")
             self.assertFalse(row["critical"])
             self.assertFalse(row["publication_safe"])
 
@@ -246,7 +246,7 @@ class EvidenceSlotAssetTest(unittest.TestCase):
                     self.assertEqual(row["slot"], slot)
                     self.assertEqual(row["asset_key"], asset_key)
                     self.assertFalse(row["critical"])
-                    self.assertEqual(row["publication_profile"], "standard")
+                    self.assertEqual(row["publication_profile"], "minimal_publication")
                     self.assertFalse(row["publication_safe"])
                     policies.append({key: row[key] for key in policy_keys})
                 self.assertEqual(policies[0], policies[1], asset_key)
@@ -425,8 +425,10 @@ class EvidenceSlotAssetTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             with zipfile.ZipFile(output) as archive:
                 names = {info.filename for info in archive.infolist() if not info.is_dir()}
-            self.assertTrue(any(name.endswith("/summary.json") for name in names))
-            self.assertTrue(any("/phase4/" in name for name in names))
+            self.assertTrue(any(name.endswith("/sanitized_summary.json") for name in names))
+            self.assertFalse(any(name.endswith("/summary.json") for name in names))
+            self.assertFalse(any("/phase4/" in name for name in names))
+            self.assertFalse(any("jwt_claims" in name or "dataaddress" in name for name in names))
 
     def test_mixed_complete_and_order_and_detection(self) -> None:
         order = ["wfs_ciudad", "ingestion_api_v2", "sparql", "wfs_juntas"]
@@ -456,7 +458,9 @@ class EvidenceSlotAssetTest(unittest.TestCase):
             with zipfile.ZipFile(zip_path) as archive:
                 names = archive.namelist()
             self.assertTrue(any("T2_ingestion_api/sanitized_summary.json" in name for name in names))
-            self.assertTrue(any("T1_wfs_ciudad/summary.json" in name for name in names))
+            self.assertTrue(any("T1_wfs_ciudad/sanitized_summary.json" in name for name in names))
+            self.assertFalse(any(name.endswith("/summary.json") for name in names))
+            self.assertFalse(any("jwt_claims" in name for name in names))
 
     def test_runtime_cells_are_contracted_not_ignored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

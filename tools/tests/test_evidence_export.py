@@ -283,6 +283,9 @@ class EvidenceExportTest(unittest.TestCase):
             set(assets),
             {
                 "ingestion_api_v2",
+                "ingestion_api_circe_prod",
+                "ingestion_api_ebro_prod",
+                "ingestion_api_ebro_parallel",
                 "csv_b2_legacy",
                 "wfs_juntas",
                 "wfs_ciudad",
@@ -353,10 +356,16 @@ class EvidenceExportTest(unittest.TestCase):
             included_targets = {row[3] for row in rows if row[0] == "INCLUDE" and row[1].startswith("T")}
             self.assertEqual(selected, {"T1", "T2", "T3"})
             for slot, folder in expected_folders.items():
+                expected_name = "summary.json" if slot == "T1" else "sanitized_summary.json"
                 self.assertTrue(
-                    any(f"{PACKAGE_ROOT}/{folder}/summary.json" == target for target in included_targets),
+                    any(f"{PACKAGE_ROOT}/{folder}/{expected_name}" == target for target in included_targets),
                     folder,
                 )
+                if slot != "T1":
+                    self.assertFalse(
+                        any(f"{PACKAGE_ROOT}/{folder}/summary.json" == target for target in included_targets),
+                        folder,
+                    )
             self.assertTrue(all("T4" not in row for row in rows))
 
     def test_only_t4_without_suffix_fails_before_evidence_read(self) -> None:
@@ -540,14 +549,15 @@ class EvidenceExportTest(unittest.TestCase):
                 cell.value: workbook["Summary"].cell(2, cell.column).value
                 for cell in workbook["Summary"][1]
             }
-            self.assertEqual(summary["workflow"], "Ingestion API v2")
-            self.assertEqual(summary["suffix"], "<run-id>")
-            self.assertEqual(summary["asset_id"], "<asset-id>")
+            self.assertEqual(summary["workflow"], "Ingestion API PRE GET")
+            self.assertEqual(summary["suffix"], "synthetic-t4")
+            self.assertEqual(
+                summary["asset_id"],
+                "ippcp_ingesta_api_pull_pre_api_key-synthetic-t4",
+            )
             self.assertEqual(summary["vocab_id"], "not_applicable")
             self.assertEqual(summary["bytes"], 1234)
-            self.assertEqual(
-                summary["sha256"], "<withheld-pending-publication-approval>"
-            )
+            self.assertEqual(summary["sha256"], "a" * 64)
             self.assertEqual(summary["overall_status"], "PASS")
             detail_values = {
                 row[0].value: row[1].value
@@ -565,7 +575,7 @@ class EvidenceExportTest(unittest.TestCase):
             )
             for canary in CANARIES:
                 self.assertNotIn(canary, workbook_text)
-            self.assertNotIn("synthetic-t4", workbook_text)
+            self.assertIn("synthetic-t4", workbook_text)
             self.assertNotIn("phase1_env.sh", workbook_text)
             self.assertNotIn("40_data_response.json", workbook_text)
             self.assert_workbook_safety_contract(output, 6)
@@ -728,7 +738,7 @@ class EvidenceExportTest(unittest.TestCase):
             )
             self.assertEqual(
                 row["asset_id"],
-                summary_document["execution_identifiers"]["asset_id"],
+                summary_document["technical_evidence"]["asset_id"],
             )
             self.assertEqual(
                 row["download_status"], manifest_document["download"]["status"]
@@ -755,7 +765,10 @@ class EvidenceExportTest(unittest.TestCase):
                 model.technical_consumer_connector,
             )
             for identifier, value in model.execution_identifiers.items():
-                self.assertEqual(detail[identifier], value)
+                if identifier in {"run_id", "asset_id"}:
+                    self.assertEqual(detail[identifier], model.technical_evidence[identifier])
+                else:
+                    self.assertEqual(detail[identifier], value)
             for phase, status in model.phase_statuses.items():
                 self.assertEqual(detail[phase], status)
             self.assertEqual(detail["delivery_mode"], model.delivery_mode)

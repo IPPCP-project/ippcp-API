@@ -110,9 +110,27 @@ lib_require_vars() {
   done
 }
 
+# Identificadores verificados en esta ejecución para un asset ya publicado.
+# No basta con IPPCP_PHASE1_REUSE_EXISTING: hace falta el marcador escrito
+# tras la verificación, ligado al SUFFIX y al ASSET_ID actuales.
+_lib_phase1_reuse_ids_are_current() {
+  [[ "${IPPCP_PHASE1_REUSE_EXISTING:-0}" == "1" ]] \
+    && [[ "${PHASE1_ASSET_ORIGIN:-}" == "verified_existing" ]] \
+    && [[ "${PHASE1_REUSE_IDS_VERIFIED:-0}" == "1" ]] \
+    && [[ -n "${SUFFIX:-}" && "${PHASE1_REUSE_SUFFIX:-}" == "${SUFFIX}" ]] \
+    && [[ -n "${ASSET_ID:-}" && "${PHASE1_REUSE_ASSET_ID:-}" == "${ASSET_ID}" ]] \
+    && [[ -n "${CD_ID:-}" && -n "${ACCESS_POLICY_ID:-}" && -n "${CONTRACT_POLICY_ID:-}" ]]
+}
+
 lib_require_vars_group() {
   local group_name="$1"
   local -n _group="${group_name}"
+  # El asset ya publicado no crea vocabulario en esta ejecución. La negociación
+  # usa la oferta del catálogo; VOCAB_ID no forma parte de ese contrato.
+  if [[ "${group_name}" == "LIB_VARS_PHASE1" ]] && _lib_phase1_reuse_ids_are_current; then
+    lib_require_vars ACCESS_POLICY_ID CONTRACT_POLICY_ID ASSET_ID CD_ID
+    return 0
+  fi
   lib_require_vars "${_group[@]}"
 }
 
@@ -260,6 +278,30 @@ lib_load_env() {
 
 lib_derive_phase1_ids() {
   lib_require_vars SUFFIX
+
+  if _lib_phase1_reuse_ids_are_current; then
+    export ACCESS_POLICY_ID CONTRACT_POLICY_ID ASSET_ID CD_ID
+    if [[ -n "${VOCAB_ID:-}" ]]; then
+      export VOCAB_ID
+    fi
+    return 0
+  fi
+
+  # Modo opt-in aún no verificado: no inventar cd-${SUFFIX} ni conservar
+  # un CD_ID de runtime/env/latest o de una ejecución anterior.
+  if [[ "${IPPCP_PHASE1_REUSE_EXISTING:-0}" == "1" ]]; then
+    if [[ "${ASSET_ID_CUSTOM:-0}" != "1" || -z "${ASSET_ID:-}" ]]; then
+      lib_die "IPPCP_PHASE1_REUSE_EXISTING requiere ASSET_ID estable cargado desde ASSET_CONFIG"
+    fi
+    unset CD_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID VOCAB_ID || true
+    unset PHASE1_REUSE_IDS_VERIFIED PHASE1_REUSE_SUFFIX PHASE1_REUSE_ASSET_ID || true
+    if [[ "${PHASE1_ASSET_ORIGIN:-}" == "verified_existing" ]]; then
+      unset PHASE1_ASSET_ORIGIN || true
+    fi
+    export ASSET_ID
+    return 0
+  fi
+
   export VOCAB_ID="vocab-${SUFFIX}"
   export ACCESS_POLICY_ID="access-${SUFFIX}"
   export CONTRACT_POLICY_ID="contract-${SUFFIX}"
@@ -412,8 +454,26 @@ lib_jwt_check_console() {
       lib_die "JWT demasiado corto para ${role} (length=${#jwt}, mínimo=${min_len})"
     fi
     lib_log INFO "${role} JWT length: ${#jwt}"
-    lib_log INFO "${role} JWT start: ${jwt:0:20}..."
   done
+}
+
+# Placeholder for diagnostic and publication-oriented artifacts.
+# The operational endpoint stays in the process environment and in the
+# private, Git-ignored phase*_env.sh file.
+lib_diagnostic_edr_endpoint() {
+  local value="${1:-}"
+  if [[ -n "${value}" && "${value}" != "null" ]]; then
+    printf '%s' '<redacted-edr-endpoint>'
+  fi
+}
+
+lib_edr_endpoint_redacted_json() {
+  local value="${1:-}"
+  if [[ -n "${value}" && "${value}" != "null" ]]; then
+    printf 'true'
+  else
+    printf 'false'
+  fi
 }
 
 _lib_jwt_decode_claims() {
@@ -760,10 +820,74 @@ _lib_write_env_file() {
   mv "${tmp}" "${dest_file}"
 }
 
+_lib_phase_env_var_names() {
+  local phase="$1"
+  case "${phase}" in
+    0)
+      printf '%s\n' \
+        SUFFIX DS_NAME PROVIDER CONSUMER PROVIDER_BASE CONSUMER_BASE PROVIDER_PROTOCOL CONSUMER_PROTOCOL \
+        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR
+      ;;
+    1)
+      printf '%s\n' \
+        SUFFIX VOCAB_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID ASSET_ID CD_ID \
+        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR \
+        IPPCP_PHASE1_REUSE_EXISTING PHASE1_ASSET_ORIGIN PHASE1_REUSE_IDS_VERIFIED \
+        PHASE1_REUSE_SUFFIX PHASE1_REUSE_ASSET_ID \
+        ASSET_ID_CUSTOM ASSET_CONFIG ASSET_SLUG ASSET_NAME ASSET_DESCRIPTION \
+        ASSET_BASE_URL ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE \
+        ASSET_HTTP_METHOD ASSET_PROXY_BODY ASSET_PROVIDER_ID \
+        ASSET_KEYWORDS_JSON ASSET_DATA_ADDRESS_NAME STORAGE_MODE
+      ;;
+    1b)
+      printf '%s\n' \
+        SUFFIX VOCAB_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID ASSET_ID CD_ID \
+        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR \
+        ASSET_ID_CUSTOM ASSET_UPLOAD_CONFIG ASSET_SLUG ASSET_NAME ASSET_DESCRIPTION \
+        ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE ASSET_KEYWORDS_JSON \
+        STORAGE_MODE LOCAL_FILE STORE_FOLDER UPLOAD_FILE_NAME FINALIZE_FILE_NAME
+      ;;
+    2)
+      printf '%s\n' \
+        SUFFIX ASSET_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID CD_ID \
+        PROVIDER_PARTICIPANT_ID OFFER_POLICY_ID CATALOG_ASSET_ID NEG_ID AGREEMENT_ID \
+        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR \
+        IPPCP_PHASE1_REUSE_EXISTING PHASE1_ASSET_ORIGIN PHASE1_REUSE_IDS_VERIFIED \
+        PHASE1_REUSE_SUFFIX PHASE1_REUSE_ASSET_ID \
+        ASSET_ID_CUSTOM ASSET_CONFIG ASSET_SLUG ASSET_NAME ASSET_DESCRIPTION \
+        ASSET_BASE_URL ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE \
+        ASSET_HTTP_METHOD ASSET_PROXY_BODY ASSET_PROVIDER_ID \
+        ASSET_KEYWORDS_JSON ASSET_DATA_ADDRESS_NAME STORAGE_MODE
+      ;;
+    3)
+      printf '%s\n' \
+        SUFFIX ASSET_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID CD_ID NEG_ID AGREEMENT_ID TRANSFER_ID EDR_URL \
+        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR \
+        IPPCP_PHASE1_REUSE_EXISTING PHASE1_ASSET_ORIGIN PHASE1_REUSE_IDS_VERIFIED \
+        PHASE1_REUSE_SUFFIX PHASE1_REUSE_ASSET_ID \
+        ASSET_ID_CUSTOM ASSET_CONFIG ASSET_SLUG ASSET_NAME ASSET_DESCRIPTION \
+        ASSET_BASE_URL ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE \
+        ASSET_HTTP_METHOD ASSET_PROXY_BODY ASSET_PROVIDER_ID \
+        ASSET_KEYWORDS_JSON ASSET_DATA_ADDRESS_NAME STORAGE_MODE
+      ;;
+    3b)
+      printf '%s\n' \
+        SUFFIX ASSET_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID CD_ID NEG_ID AGREEMENT_ID TRANSFER_ID \
+        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR \
+        TRANSFER_TYPE STORAGE_MODE ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE \
+        ASSET_UPLOAD_CONFIG LOCAL_FILE STORE_FOLDER UPLOAD_FILE_NAME FINALIZE_FILE_NAME \
+        CONSUMER_TRANSFER_STATE
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 lib_export_phase_env() {
   local phase="$1"
   local -a vars=()
-  local phase_label run_dest root_dest
+  local phase_label run_dest latest_dest name
 
   lib_require_vars SUFFIX
   if [[ -z "${RUN_DIR:-}" ]]; then
@@ -771,66 +895,20 @@ lib_export_phase_env() {
   fi
 
   case "${phase}" in
-    0)
-      vars=(
-        SUFFIX DS_NAME PROVIDER CONSUMER PROVIDER_BASE CONSUMER_BASE PROVIDER_PROTOCOL CONSUMER_PROTOCOL
-        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR
-      )
-      ;;
-    1)
+    1|1b)
       lib_derive_phase1_ids
-      vars=(
-        SUFFIX VOCAB_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID ASSET_ID CD_ID
-        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR
-        ASSET_ID_CUSTOM ASSET_CONFIG ASSET_SLUG ASSET_NAME ASSET_DESCRIPTION
-        ASSET_BASE_URL ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE
-        ASSET_HTTP_METHOD ASSET_PROXY_BODY
-        ASSET_KEYWORDS_JSON ASSET_DATA_ADDRESS_NAME STORAGE_MODE
-      )
       ;;
-    1b)
-      lib_derive_phase1_ids
-      vars=(
-        SUFFIX VOCAB_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID ASSET_ID CD_ID
-        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR
-        ASSET_ID_CUSTOM ASSET_UPLOAD_CONFIG ASSET_SLUG ASSET_NAME ASSET_DESCRIPTION
-        ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE ASSET_KEYWORDS_JSON
-        STORAGE_MODE LOCAL_FILE STORE_FOLDER UPLOAD_FILE_NAME FINALIZE_FILE_NAME
-      )
-      ;;
-    2)
-      vars=(
-        SUFFIX ASSET_ID PROVIDER_PARTICIPANT_ID OFFER_POLICY_ID CATALOG_ASSET_ID NEG_ID AGREEMENT_ID
-        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR
-        ASSET_ID_CUSTOM ASSET_CONFIG ASSET_SLUG ASSET_NAME ASSET_DESCRIPTION
-        ASSET_BASE_URL ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE
-        ASSET_HTTP_METHOD ASSET_PROXY_BODY
-        ASSET_KEYWORDS_JSON ASSET_DATA_ADDRESS_NAME STORAGE_MODE
-      )
-      ;;
-    3)
-      vars=(
-        SUFFIX ASSET_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID CD_ID NEG_ID AGREEMENT_ID TRANSFER_ID EDR_URL
-        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR
-        ASSET_ID_CUSTOM ASSET_CONFIG ASSET_SLUG ASSET_NAME ASSET_DESCRIPTION
-        ASSET_BASE_URL ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE
-        ASSET_HTTP_METHOD ASSET_PROXY_BODY
-        ASSET_KEYWORDS_JSON ASSET_DATA_ADDRESS_NAME STORAGE_MODE
-      )
-      ;;
-    3b)
-      vars=(
-        SUFFIX ASSET_ID ACCESS_POLICY_ID CONTRACT_POLICY_ID CD_ID NEG_ID AGREEMENT_ID TRANSFER_ID
-        IPPCP_DATASPACE IPPCP_DATASPACE_DIR IPPCP_DATASPACE_FILE IPPCP_FLOW IPPCP_FLOW_VERSION IPPCP_FLOW_DIR
-        TRANSFER_TYPE STORAGE_MODE ASSET_CONTENT_KIND ASSET_EXTENSION ASSET_MEDIA_TYPE
-        ASSET_UPLOAD_CONFIG LOCAL_FILE STORE_FOLDER UPLOAD_FILE_NAME FINALIZE_FILE_NAME
-        CONSUMER_TRANSFER_STATE
-      )
+    0|2|3|3b)
       ;;
     *)
       lib_die "lib_export_phase_env: fase inválida '${phase}' (esperado 0-3, 1b, 3b)"
       ;;
   esac
+
+  while IFS= read -r name; do
+    [[ -n "${name}" ]] || continue
+    vars+=("${name}")
+  done < <(_lib_phase_env_var_names "${phase}")
 
   lib_init_env_dirs
 

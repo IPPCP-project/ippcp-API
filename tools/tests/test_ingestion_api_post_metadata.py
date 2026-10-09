@@ -71,7 +71,7 @@ class IngestionApiPostMetadataTest(unittest.TestCase):
             root = Path(tmp)
             create_ingestion_post_metadata_run(root)
             loader, spec, asset = self._load_classified(root, "synthetic-ingestion-post")
-            self.assertEqual(asset.key, "ingestion_api_v2")
+            self.assertEqual(asset.key, "ingestion_api_ebro_prod")
             self.assertEqual(spec.publication_profile, "minimal_publication")
             validation = validate_classified_run(loader, spec)
             self.assertTrue(validation.ok, validation.findings)
@@ -88,20 +88,33 @@ class IngestionApiPostMetadataTest(unittest.TestCase):
                 slug="ippcp_ingesta_pull_circe_prod",
                 asset_config="asset_configs/real/ingesta/ingesta_api_pull_circe_prod.json",
             )
-            # Override asset_id inside manifest/summary to Circe prod id.
-            summary_path = root / "evidencias/runs/synthetic-circe-post/summary.json"
+            run = root / "evidencias/runs/synthetic-circe-post"
+            summary_path = run / "summary.json"
             summary = json.loads(summary_path.read_text(encoding="utf-8"))
-            for step in summary["phases"]["phase1"]["steps"]:
-                if step.get("id") == "create_asset":
-                    step["asset_id"] = "ippcp-ingesta-pull-circe-prod"
-                    step["asset_slug"] = "ippcp_ingesta_pull_circe_prod"
+            summary["phases"]["phase1"]["steps"] = [
+                {
+                    "id": "verify_existing_asset",
+                    "status": "ok",
+                    "asset_origin": "verified_existing",
+                    "asset_id": "ippcp-ingesta-pull-circe-prod",
+                }
+            ]
             summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
-            manifest_path = root / "evidencias/runs/synthetic-circe-post/phase4/post_manifest.json"
+            manifest_path = run / "phase4" / "post_manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             manifest["asset_id"] = "ippcp-ingesta-pull-circe-prod"
             manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-            _loader, _spec, asset = self._load_classified(root, "synthetic-circe-post")
-            self.assertEqual(asset.key, "ingestion_api_v2")
+            (run / "phase1_env.sh").write_text(
+                "export PHASE1_ASSET_ORIGIN=verified_existing\n"
+                "export ASSET_ID=ippcp-ingesta-pull-circe-prod\n"
+                "export ASSET_PROVIDER_ID=2\n"
+                "export IPPCP_PHASE1_REUSE_EXISTING=1\n",
+                encoding="utf-8",
+            )
+            _loader, spec, asset = self._load_classified(root, "synthetic-circe-post")
+            self.assertEqual(asset.key, "ingestion_api_circe_prod")
+            self.assertEqual(spec.display_name, "Ingestion API CIRCE PROD POST")
+            self.assertNotIn("ingesta_api_pull_pre_api_key", spec.asset_config)
 
     def test_post_invalid_variants_fail(self) -> None:
         cases = [
@@ -164,7 +177,7 @@ class IngestionApiPostMetadataTest(unittest.TestCase):
                 self.assertNotIn("CANARY-AUTHORIZATION", joined)
                 self.assertNotIn("CANARY-REQUEST-BODY", joined)
                 self.assertNotIn("CANARY-RESPONSE-BODY", joined)
-                self.assertNotIn("synthetic-ingestion-post", joined)
+                self.assertIn("synthetic-ingestion-post", joined)
                 self.assertEqual(PublicationScanner.findings(joined), [])
                 manifest = json.loads(
                     next(
@@ -216,7 +229,7 @@ class IngestionApiPostMetadataTest(unittest.TestCase):
             self.assertIn("delivery_mode=post_metadata_only", row["notes"])
             detail = {
                 cells[0].value: cells[1].value
-                for cells in wb["T1_ingestion_api"].iter_rows(min_col=1, max_col=2)
+                for cells in wb["T1_ebro_prod"].iter_rows(min_col=1, max_col=2)
                 if cells[0].value
             }
             self.assertEqual(detail["delivery_mode"], "post_metadata_only")
@@ -224,6 +237,65 @@ class IngestionApiPostMetadataTest(unittest.TestCase):
             self.assertEqual(detail["http_status"], "200")
             self.assertEqual(detail["download_status"], "not_applicable")
             self.assertFalse(detail["sha256_verified"])
+
+    def test_minimal_publication_excludes_edr_endpoint_and_jwt_prefix(self) -> None:
+        canary_url = "https://edr-canary.invalid/dataplane"
+        jwt_prefix = "eyJcanaryprefixvalue"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            create_ingestion_post_metadata_run(root)
+            run = root / "evidencias" / "runs" / "synthetic-ingestion-post"
+            manifest_path = run / "phase4" / "post_manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["edr_url"] = canary_url
+            manifest["edr_url_redacted"] = False
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            summary_path = run / "summary.json"
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            summary["phases"]["phase3"]["steps"].append(
+                {
+                    "id": "edr_obtained",
+                    "status": "ok",
+                    "edr_url": canary_url,
+                    "jwt_prefix": jwt_prefix,
+                }
+            )
+            summary_path.write_text(json.dumps(summary), encoding="utf-8")
+            (run / "phase3_env.sh").write_text(
+                f"export EDR_URL={canary_url}\nexport CONSUMER_JWT={jwt_prefix}xxxxxxxx\n",
+                encoding="utf-8",
+            )
+            output = root / "post-confidential.zip"
+            result = subprocess.run(
+                [
+                    PYTHON,
+                    str(PACKAGE_SCRIPT),
+                    "--repo-root",
+                    str(root),
+                    "--config",
+                    str(CONFIG_PATH),
+                    "--tests",
+                    "T1=synthetic-ingestion-post",
+                    "--output",
+                    str(output),
+                    "--strict",
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            with zipfile.ZipFile(output) as archive:
+                joined = "\n".join(
+                    archive.read(name).decode("utf-8", errors="ignore")
+                    for name in archive.namelist()
+                    if not name.endswith("/")
+                )
+            self.assertNotIn(canary_url, joined)
+            self.assertNotIn(jwt_prefix, joined)
+            self.assertNotIn("phase3_env.sh", joined)
+            self.assertIn("post_metadata_only", joined)
 
 
 if __name__ == "__main__":

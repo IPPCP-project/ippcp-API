@@ -10,6 +10,9 @@
 #
 # Assets POST (ASSET_HTTP_METHOD=POST):
 #   INGESTA_API_REQUEST_BODY_FILE=ruta/al/body.json  (obligatorio; no versionar payloads PROD)
+#   Un POST de negocio se envía como máximo una vez por ejecución.
+#   Si el EDR produce varios candidatos, hace falta PHASE4_POST_AUTH_LABEL
+#   antes de enviar. Un intento ya registrado no se reintenta en el mismo run.
 #
 # Uso:
 #   source runtime/env/latest/phase3_env.sh
@@ -184,6 +187,154 @@ _phase4_resolve_http_method() {
   esac
 }
 
+_phase4_resolve_asset_config_path() {
+  local config_path="${ASSET_CONFIG:-}"
+  [[ -n "${config_path}" ]] || return 1
+  if [[ "${config_path}" != /* ]]; then
+    [[ -n "${API_ROOT:-}" ]] || return 1
+    config_path="${API_ROOT}/${config_path}"
+  fi
+  [[ -f "${config_path}" ]] || return 1
+  printf '%s\n' "${config_path}"
+}
+
+# El perfil paralelo no se reconoce por un substring. Hace falta la
+# configuración local sin asset_id, el mismo upstream que la canónica,
+# y el identificador exacto slug-SUFFIX.
+_phase4_ebro_parallel_identity_config() {
+  local config_path canonical
+  config_path="$(_phase4_resolve_asset_config_path)" || return 1
+  canonical="${API_ROOT}/asset_configs/real/ingesta/ingesta_api_pull_industrias_ebro_prod.json"
+  [[ -f "${canonical}" ]] \
+    || lib_die "configuración canónica de Ebro no disponible para clasificar el perfil paralelo"
+  jq -e --slurpfile canon "${canonical}" '
+    def absent_or_empty:
+      (. == null) or (type == "string" and length == 0);
+    type == "object"
+    and (.asset_slug == "ippcp_ingesta_pull_industrias_ebro_prod")
+    and (.asset_slug == $canon[0].asset_slug)
+    and ((.asset_id | absent_or_empty))
+    and ($canon[0].asset_id == "ippcp-ingesta-pull-industrias-ebro-prod")
+    and (.type == "HttpData")
+    and (.base_url == $canon[0].base_url)
+    and (.base_url | type == "string" and length > 0)
+    and (has("proxyMethod") | not)
+    and (has("proxyPath") | not)
+    and (has("proxyQueryParams") | not)
+    and (has("header:X-Api-Key") | not)
+    and (has("centers") | not)
+    and (has("INGESTA_API_KEY") | not)
+  ' "${config_path}" >/dev/null 2>&1
+}
+
+_phase4_asset_id_is_ebro_parallel_pattern() {
+  local suffix="${SUFFIX:-}"
+  [[ "${suffix}" =~ ^[0-9]+$ ]] || return 1
+  [[ "${ASSET_ID:-}" == "ippcp_ingesta_pull_industrias_ebro_prod-${suffix}" ]]
+}
+
+_phase4_assert_ebro_parallel_gates() {
+  local config_path method proxy provider
+  config_path="$(_phase4_resolve_asset_config_path)" \
+    || lib_die "perfil paralelo de Ebro rechazado: configuración ausente"
+  method="$(jq -r '.http_method // empty' "${config_path}")"
+  proxy="$(jq -r 'if .proxy_body == true then "true" else "false" end' "${config_path}")"
+  provider="$(jq -r '.provider_id // empty | tostring' "${config_path}")"
+  [[ "${method}" == "POST" ]] \
+    || lib_die "perfil paralelo de Ebro rechazado: method distinto de POST"
+  [[ "${proxy}" == "true" ]] \
+    || lib_die "perfil paralelo de Ebro rechazado: proxyBody no está activo"
+  [[ "${provider}" == "1" ]] \
+    || lib_die "perfil paralelo de Ebro rechazado: provider id distinto de 1"
+  [[ "${ASSET_HTTP_METHOD:-}" == "POST" ]] \
+    || lib_die "perfil paralelo de Ebro rechazado: method distinto de POST"
+  [[ "${ASSET_PROXY_BODY:-}" == "1" ]] \
+    || lib_die "perfil paralelo de Ebro rechazado: proxyBody no está activo"
+  [[ "${ASSET_PROVIDER_ID:-}" == "1" ]] \
+    || lib_die "perfil paralelo de Ebro rechazado: provider id distinto de 1"
+  [[ "${ASSET_SLUG:-}" == "ippcp_ingesta_pull_industrias_ebro_prod" ]] \
+    || lib_die "perfil paralelo de Ebro rechazado: el slug no coincide con la configuración validada"
+  _phase4_asset_id_is_ebro_parallel_pattern \
+    || lib_die "perfil paralelo de Ebro rechazado: el identificador no es el derivado del slug y el SUFFIX"
+}
+
+_phase4_classify_prod_company_profile() {
+  local asset_id="${ASSET_ID:-}"
+  local identity=0
+  local id_pattern=0
+
+  if _phase4_ebro_parallel_identity_config; then
+    identity=1
+  fi
+  if _phase4_asset_id_is_ebro_parallel_pattern; then
+    id_pattern=1
+  fi
+
+  if [[ "${asset_id}" == "ippcp-ingesta-pull-industrias-ebro-prod" || "${asset_id}" == "ippcp-ingesta-pull-circe-prod" ]]; then
+    if (( identity == 1 || id_pattern == 1 )); then
+      lib_die "clasificación de asset PROD ambigua: el identificador estable no puede combinarse con el perfil paralelo de Ebro"
+    fi
+    if [[ "${asset_id}" == "ippcp-ingesta-pull-industrias-ebro-prod" ]]; then
+      printf 'ebro\n'
+    else
+      printf 'circe\n'
+    fi
+    return 0
+  fi
+
+  if (( identity == 1 )); then
+    _phase4_assert_ebro_parallel_gates
+    printf 'ebro\n'
+    return 0
+  fi
+
+  if (( id_pattern == 1 )); then
+    lib_die "clasificación de asset PROD ambigua: el identificador paralelo de Ebro no está respaldado por su configuración"
+  fi
+
+  printf '\n'
+}
+
+_phase4_validate_prod_company_payload() {
+  local body_path="$1"
+  local profile
+  profile="$(_phase4_classify_prod_company_profile)"
+  if [[ -z "${profile}" ]]; then
+    return 0
+  fi
+
+  [[ -f "${body_path}" ]] || lib_die "payload PROD ausente"
+  [[ -s "${body_path}" ]] || lib_die "payload PROD vacío"
+  jq empty "${body_path}" >/dev/null 2>&1 \
+    || lib_die "payload PROD no es JSON válido"
+
+  if ! jq -e '
+    type == "object"
+    and (.centers | type == "array" and length > 0)
+    and (.centers[0] | type == "object")
+  ' "${body_path}" >/dev/null 2>&1; then
+    lib_die "payload PROD: se requiere un objeto raíz con centers no vacío"
+  fi
+
+  if [[ "${profile}" == "ebro" ]]; then
+    if ! jq -e '
+      (.centers[0].centerId | type == "number" and . == floor)
+      and ((.centers[0] | has("districtCode")) | not)
+    ' "${body_path}" >/dev/null 2>&1; then
+      lib_die "payload Industrias Ebro inválido: se requiere centers[0].centerId entero y no debe contener districtCode"
+    fi
+  elif [[ "${profile}" == "circe" ]]; then
+    if ! jq -e '
+      (.centers[0].districtCode | type == "string" and length > 0)
+      and ((.centers[0] | has("centerId")) | not)
+    ' "${body_path}" >/dev/null 2>&1; then
+      lib_die "payload CIRCE inválido: se requiere centers[0].districtCode cadena no vacía y no debe contener centerId"
+    fi
+  else
+    lib_die "clasificación de asset PROD ambigua"
+  fi
+}
+
 _phase4_prepare_request_body() {
   PHASE4_REQUEST_BODY_FILE=""
   if [[ "${PHASE4_HTTP_METHOD}" != "POST" ]]; then
@@ -208,6 +359,8 @@ _phase4_prepare_request_body() {
       || lib_die "INGESTA_API_REQUEST_BODY_FILE no es JSON válido"
   fi
 
+  _phase4_validate_prod_company_payload "${body_path}"
+
   PHASE4_REQUEST_BODY_FILE="${body_path}"
   lib_log INFO "phase4 POST request configured (body file present; content not logged)"
 }
@@ -218,17 +371,11 @@ _phase4_data_response_basename() {
 
 _phase4_edr_url_has_sensitive_params() {
   local value="${1:-}"
-  local lower="${value,,}"
-
-  [[ "${lower}" =~ [\?\#\&]([^=]*)(access_token|token|bearer|auth|code|credential)([^=]*)= ]]
+  [[ -n "${value}" && "${value}" != "null" ]]
 }
 
 _phase4_safe_edr_url() {
-  if _phase4_edr_url_has_sensitive_params "${EDR_URL:-}"; then
-    printf '%s' '<redacted-sensitive-edr-url>'
-  else
-    printf '%s' "${EDR_URL:-}"
-  fi
+  lib_diagnostic_edr_endpoint "${EDR_URL:-}"
 }
 
 _phase4_assert_no_sensitive_control_artifact() {
@@ -264,23 +411,23 @@ _phase4_redact_edr_file() {
   local tmp="${redacted_file}.$$"
 
   jq '
-    def key_visible($k):
+    def key_is_endpoint($k):
       ($k | ascii_downcase) as $kl
-      | ($kl == "endpoint" or $kl == "endpointurl" or $kl == "edc:endpoint");
+      | $kl == "endpoint" or $kl == "endpointurl" or $kl == "edc:endpoint"
+        or ($kl | test("(^|[/:])endpoint$"));
     def key_should_redact($k):
-      key_visible($k) | not
-      and (
-        ($k | ascii_downcase | test("token"))
-        or ($k | ascii_downcase | test("secret"))
-        or ($k | ascii_downcase | test("authorization"))
-        or ($k | ascii_downcase | test("auth"))
-        or ($k | ascii_downcase | test("code"))
-        or ($k | ascii_downcase | test("credential"))
-      );
+      ($k | ascii_downcase | test("token"))
+      or ($k | ascii_downcase | test("secret"))
+      or ($k | ascii_downcase | test("authorization"))
+      or ($k | ascii_downcase | test("auth"))
+      or ($k | ascii_downcase | test("code"))
+      or ($k | ascii_downcase | test("credential"));
     def redact:
       if type == "object" then
         with_entries(
-          if (.key | ascii_downcase | endswith("header:x-api-key")) then
+          if key_is_endpoint(.key) then
+            .value = "<redacted-edr-endpoint>"
+          elif (.key | ascii_downcase | endswith("header:x-api-key")) then
             .value = "<redacted>"
           elif key_should_redact(.key) then
             .value = "***REDACTED***"
@@ -787,6 +934,8 @@ _phase4_write_post_metadata_manifest() {
     --argjson response_bytes "${PHASE4_POST_RESPONSE_BYTES:-0}" \
     --argjson edr_url_redacted "$(_phase4_edr_url_has_sensitive_params "${EDR_URL:-}" && echo true || echo false)" \
     --argjson request_body_bytes "${PHASE4_POST_REQUEST_BODY_BYTES:-0}" \
+    --arg attempt_consumed "${PHASE4_POST_ATTEMPT_CONSUMED:-}" \
+    --arg business_count "${PHASE4_BUSINESS_POST_COUNT:-}" \
     '{
       suffix: $suffix,
       asset_id: $asset_id,
@@ -807,7 +956,10 @@ _phase4_write_post_metadata_manifest() {
       created_at: $created_at,
       status: "ok",
       manifest_kind: "post_metadata_only"
-    }' > "${tmp}"
+    }
+    + (if $attempt_consumed == "1" then {post_attempt_consumed: true} else {} end)
+    + (if $business_count != "" then {business_post_count: ($business_count | tonumber)} else {} end)
+    ' > "${tmp}"
 
   mv "${tmp}" "${dest}"
 }
@@ -827,6 +979,8 @@ _phase4_finalize_post_metadata_only() {
     --argjson http_status "${DATA_HTTP}" \
     --argjson response_bytes "${PHASE4_POST_RESPONSE_BYTES:-0}" \
     --argjson request_body_bytes "${PHASE4_POST_REQUEST_BODY_BYTES:-0}" \
+    --arg attempt_consumed "${PHASE4_POST_ATTEMPT_CONSUMED:-}" \
+    --arg business_count "${PHASE4_BUSINESS_POST_COUNT:-}" \
     '{
       operation: $operation,
       http_method: "POST",
@@ -840,7 +994,10 @@ _phase4_finalize_post_metadata_only() {
       auth_candidate_label: $auth_candidate_label,
       status: "ok",
       created_at: $created_at
-    }' > "${result_file}"
+    }
+    + (if $attempt_consumed == "1" then {post_attempt_consumed: true} else {} end)
+    + (if $business_count != "" then {business_post_count: ($business_count | tonumber)} else {} end)
+    ' > "${result_file}"
 
   _phase4_write_post_metadata_manifest "${manifest_file}"
 
@@ -862,6 +1019,203 @@ _phase4_finalize_post_metadata_only() {
   _phase4_assert_no_sensitive_control_artifact "${PHASE4_DIR}/42_data_attempts_summary.json"
   _phase4_assert_no_sensitive_control_artifact "${result_file}"
   _phase4_assert_no_sensitive_control_artifact "${manifest_file}"
+}
+
+_phase4_select_post_auth_candidate() {
+  local count="${#PHASE4_AUTH_CANDIDATE_LABELS[@]}"
+  local wanted="${PHASE4_POST_AUTH_LABEL:-}"
+  local i found=-1
+
+  if (( count < 1 )); then
+    lib_die "No hay candidatos de autenticación EDR tras extraer credenciales"
+  fi
+
+  if [[ -n "${wanted}" ]]; then
+    for i in "${!PHASE4_AUTH_CANDIDATE_LABELS[@]}"; do
+      if [[ "${PHASE4_AUTH_CANDIDATE_LABELS[$i]}" == "${wanted}" ]]; then
+        if (( found >= 0 )); then
+          lib_die "PHASE4_POST_AUTH_LABEL ambiguo; no se envía el POST"
+        fi
+        found="${i}"
+      fi
+    done
+    if (( found < 0 )); then
+      lib_die "PHASE4_POST_AUTH_LABEL no coincide con un candidato; no se envía el POST"
+    fi
+  elif (( count != 1 )); then
+    lib_die "autenticación POST ambigua (${count} candidatos); no se envía ninguna petición de negocio"
+  else
+    found=0
+  fi
+
+  PHASE4_AUTH_CANDIDATE_LABEL="${PHASE4_AUTH_CANDIDATE_LABELS[$found]}"
+  PHASE4_POST_AUTH_HEADER="${PHASE4_AUTH_CANDIDATE_HEADERS[$found]}"
+}
+
+_phase4_post_attempt_marker_path() {
+  printf '%s/post_attempt_consumed.json' "${PHASE4_DIR}"
+}
+
+_phase4_refuse_repeated_post_attempt() {
+  local marker
+  marker="$(_phase4_post_attempt_marker_path)"
+  if [[ -f "${marker}" ]]; then
+    lib_die "POST phase4 ya fue intentado para SUFFIX=${SUFFIX}. No se reintenta. Hace falta una operación nueva autorizada por separado."
+  fi
+}
+
+_phase4_write_post_attempt_marker() {
+  local outcome="$1"
+  local http_status="$2"
+  local curl_exit_value="$3"
+  local marker tmp
+
+  marker="$(_phase4_post_attempt_marker_path)"
+  tmp="${marker}.$$"
+  jq -n \
+    --arg suffix "${SUFFIX}" \
+    --arg asset_id "${ASSET_ID}" \
+    --arg outcome "${outcome}" \
+    --arg auth_label "${PHASE4_AUTH_CANDIDATE_LABEL}" \
+    --arg http_status "${http_status}" \
+    --arg curl_exit "${curl_exit_value}" \
+    '{
+      suffix: $suffix,
+      asset_id: $asset_id,
+      post_attempt_consumed: true,
+      business_post_count: 1,
+      outcome: $outcome,
+      auth_candidate_label: $auth_label,
+      http_status: (if $http_status == "" then null else ($http_status | tonumber) end),
+      curl_exit: (if $curl_exit == "" then null else ($curl_exit | tonumber) end)
+    }' > "${tmp}"
+  mv "${tmp}" "${marker}"
+  chmod 600 "${marker}"
+}
+
+_phase4_consume_prod_post_once() {
+  local request_body_bytes="$1"
+  local label header base attempt_n="01"
+  local -a curl_headers=()
+  local -a curl_extra=()
+  local post_tmp_body curl_meta curl_exit http_code
+  local response_media_type="" data_bytes=0 success=0
+  local summary_file="${PHASE4_DIR}/42_data_attempts_summary.json"
+  local summary_tmp="${summary_file}.$$"
+  local outcome="transport_or_ambiguous"
+  local http_json="null"
+
+  _phase4_select_post_auth_candidate
+  _phase4_refuse_repeated_post_attempt
+
+  label="${PHASE4_AUTH_CANDIDATE_LABEL}"
+  header="${PHASE4_POST_AUTH_HEADER}"
+  base="${PHASE4_DIR}/40_data_response_attempt_${attempt_n}"
+
+  _phase4_write_post_attempt_marker "pending" "" ""
+
+  _phase4_ensure_post_tmp_dir
+  post_tmp_body="${PHASE4_EDR_TMP_DIR}/post_attempt_${attempt_n}.body"
+  curl_headers=(-H "${header}")
+  if [[ "${PHASE4_REQUIRES_INGESTA_API_AUTH:-0}" == "1" ]]; then
+    if _phase4_header_is_authorization "${header}"; then
+      lib_die "No se puede usar Authorization simultáneamente para autenticar contra el EDR/Data Plane y contra la Ingesta API upstream. Hace falta proxy/backend, trust Data Plane-backend, header alternativo o credencial gestionada en infraestructura."
+    fi
+    curl_headers+=(-H "Authorization: Bearer ${INGESTA_API_BEARER_TOKEN}")
+  fi
+  curl_headers+=(-H "Content-Type: ${ASSET_MEDIA_TYPE:-application/json}")
+  curl_extra=(--data-binary @"${PHASE4_REQUEST_BODY_FILE}")
+
+  set +e
+  curl_meta="$(
+    curl -sS --retry 0 -o "${post_tmp_body}" -w '%{http_code}\t%{content_type}' \
+      -X POST "${EDR_URL}" \
+      "${curl_headers[@]}" \
+      "${curl_extra[@]}"
+  )"
+  curl_exit=$?
+  set -e
+
+  http_code="$(printf '%s' "${curl_meta}" | awk -F '\t' '{print $1}')"
+  response_media_type="$(printf '%s' "${curl_meta}" | awk -F '\t' '{print $2}')"
+  if [[ ! "${http_code}" =~ ^[0-9]{3}$ ]]; then
+    http_code=""
+  fi
+  if [[ -n "${http_code}" ]]; then
+    printf '%s\n' "${http_code}" > "${base}.http"
+  else
+    printf '%s\n' "000" > "${base}.http"
+  fi
+  lib_log INFO "[phase4 data 01] label=${label} method=POST HTTP=${http_code:-none} curl_exit=${curl_exit}"
+
+  data_bytes=0
+  if [[ -f "${post_tmp_body}" ]]; then
+    data_bytes="$(_phase4_file_bytes "${post_tmp_body}")"
+  fi
+
+  if [[ "${curl_exit}" -ne 0 || -z "${http_code}" ]]; then
+    outcome="transport_or_ambiguous"
+    success=0
+  elif _phase4_attempt_is_successful "${post_tmp_body}" "${http_code}" "${curl_exit}"; then
+    outcome="http_2xx"
+    success=1
+    cp "${base}.http" "${PHASE4_DIR}/40_data_response.http"
+    PHASE4_POST_RESPONSE_BYTES="${data_bytes}"
+    PHASE4_POST_RESPONSE_MEDIA_TYPE="${response_media_type}"
+    PHASE4_DATA_RESPONSE_FILE=""
+    export PHASE4_DATA_RESPONSE_FILE
+  else
+    outcome="http_error"
+    success=0
+  fi
+
+  _phase4_scrub_file "${post_tmp_body}"
+  _phase4_write_post_attempt_marker "${outcome}" "${http_code}" "${curl_exit}"
+
+  PHASE4_POST_ATTEMPT_CONSUMED=1
+  PHASE4_BUSINESS_POST_COUNT=1
+  export PHASE4_POST_ATTEMPT_CONSUMED PHASE4_BUSINESS_POST_COUNT PHASE4_AUTH_CANDIDATE_LABEL
+
+  if [[ "${http_code}" =~ ^[0-9]+$ ]]; then
+    http_json="${http_code}"
+  fi
+
+  jq -nc \
+    --arg outcome "${outcome}" \
+    --arg label "${label}" \
+    --argjson http "${http_json}" \
+    --argjson selected "$([[ "${success}" == 1 ]] && echo true || echo false)" \
+    --argjson response_bytes "${data_bytes}" \
+    --argjson request_body_bytes "${request_body_bytes}" \
+    '{
+      http_method: "POST",
+      post_attempt_consumed: true,
+      business_post_count: 1,
+      outcome: $outcome,
+      request_body_bytes: $request_body_bytes,
+      response_body_persisted: false,
+      request_body_persisted: false,
+      download_persisted: false,
+      attempts: [{
+        attempt: 1,
+        label: $label,
+        http: $http,
+        selected: $selected,
+        http_method: "POST",
+        response_bytes: $response_bytes,
+        response_body_persisted: false
+      }]
+    }' > "${summary_tmp}"
+  mv "${summary_tmp}" "${summary_file}"
+
+  if (( success == 1 )); then
+    return 0
+  fi
+
+  if [[ "${outcome}" == "transport_or_ambiguous" ]]; then
+    lib_die "POST phase4 con resultado de transporte ambiguo. No se reintenta: un timeout no demuestra que la petición no se procesó."
+  fi
+  lib_die "POST phase4 no satisfactorio (HTTP ${http_code:-desconocido}). No se prueba otro candidato ni se reintenta."
 }
 
 _phase4_consume_data_with_auth_candidates() {
@@ -895,6 +1249,11 @@ _phase4_consume_data_with_auth_candidates() {
     PHASE4_POST_REQUEST_BODY_BYTES="${request_body_bytes}"
   fi
 
+  if [[ "${PHASE4_HTTP_METHOD}" == "POST" ]]; then
+    _phase4_consume_prod_post_once "${request_body_bytes}"
+    return 0
+  fi
+
   for i in "${!PHASE4_AUTH_CANDIDATE_LABELS[@]}"; do
     attempt_n="$(printf '%02d' "$((i + 1))")"
     label="${PHASE4_AUTH_CANDIDATE_LABELS[$i]}"
@@ -915,61 +1274,28 @@ _phase4_consume_data_with_auth_candidates() {
     fi
 
     if [[ "${PHASE4_HTTP_METHOD}" == "POST" ]]; then
-      _phase4_ensure_post_tmp_dir
-      post_tmp_body="${PHASE4_EDR_TMP_DIR}/post_attempt_${attempt_n}.body"
-      curl_headers+=(-H "Content-Type: ${ASSET_MEDIA_TYPE:-application/json}")
-      curl_extra=(--data-binary @"${PHASE4_REQUEST_BODY_FILE}")
-      set +e
-      curl_meta="$(
-        curl -sS -o "${post_tmp_body}" -w '%{http_code}\t%{content_type}' \
-          -X POST "${EDR_URL}" \
-          "${curl_headers[@]}" \
-          "${curl_extra[@]}"
-      )"
-      curl_exit=$?
-      set -e
-      http_code="$(printf '%s' "${curl_meta}" | awk -F '\t' '{print $1}')"
-      response_media_type="$(printf '%s' "${curl_meta}" | awk -F '\t' '{print $2}')"
-      printf '%s\n' "${http_code}" > "${base}.http"
-      lib_log INFO "[phase4 data ${attempt_n}] label=${label} method=POST HTTP=${http_code} curl_exit=${curl_exit}"
+      lib_die "POST phase4 no puede entrar en el bucle de candidatos de autenticación"
+    fi
 
-      data_bytes=0
-      if [[ -f "${post_tmp_body}" ]]; then
-        data_bytes="$(_phase4_file_bytes "${post_tmp_body}")"
-      fi
+    set +e
+    http_code="$(
+      curl -sS -o "${attempt_file}" -w '%{http_code}' \
+        -X GET "${EDR_URL}" \
+        "${curl_headers[@]}"
+    )"
+    curl_exit=$?
+    set -e
+    printf '%s\n' "${http_code}" > "${base}.http"
+    lib_log INFO "[phase4 data ${attempt_n}] label=${label} HTTP=${http_code} curl_exit=${curl_exit}"
 
-      if _phase4_attempt_is_successful "${post_tmp_body}" "${http_code}" "${curl_exit}"; then
-        cp "${base}.http" "${PHASE4_DIR}/40_data_response.http"
-        PHASE4_AUTH_CANDIDATE_LABEL="${label}"
-        PHASE4_POST_RESPONSE_BYTES="${data_bytes}"
-        PHASE4_POST_RESPONSE_MEDIA_TYPE="${response_media_type}"
-        PHASE4_DATA_RESPONSE_FILE=""
-        export PHASE4_DATA_RESPONSE_FILE
-        selected=true
-        success=1
-      fi
-      _phase4_scrub_file "${post_tmp_body}"
-    else
-      set +e
-      http_code="$(
-        curl -sS -o "${attempt_file}" -w '%{http_code}' \
-          -X GET "${EDR_URL}" \
-          "${curl_headers[@]}"
-      )"
-      curl_exit=$?
-      set -e
-      printf '%s\n' "${http_code}" > "${base}.http"
-      lib_log INFO "[phase4 data ${attempt_n}] label=${label} HTTP=${http_code} curl_exit=${curl_exit}"
+    if _phase4_attempt_is_successful "${attempt_file}" "${http_code}" "${curl_exit}"; then
+      cp "${attempt_file}" "${canonical_file}"
+      cp "${base}.http" "${PHASE4_DIR}/40_data_response.http"
+      _phase4_write_data_preview "${canonical_file}" "${PHASE4_DIR}/41_data_preview.json"
 
-      if _phase4_attempt_is_successful "${attempt_file}" "${http_code}" "${curl_exit}"; then
-        cp "${attempt_file}" "${canonical_file}"
-        cp "${base}.http" "${PHASE4_DIR}/40_data_response.http"
-        _phase4_write_data_preview "${canonical_file}" "${PHASE4_DIR}/41_data_preview.json"
-
-        PHASE4_AUTH_CANDIDATE_LABEL="${label}"
-        selected=true
-        success=1
-      fi
+      PHASE4_AUTH_CANDIDATE_LABEL="${label}"
+      selected=true
+      success=1
     fi
 
     attempt_response_bytes=0
@@ -994,6 +1320,9 @@ _phase4_consume_data_with_auth_candidates() {
             response_body_persisted: false
           } else {} end)'
     )")
+    if (( success == 1 )); then
+      break
+    fi
   done
 
   attempts_json="$(jq -s '.' <<< "$(printf '%s\n' "${summary_lines[@]}")")"

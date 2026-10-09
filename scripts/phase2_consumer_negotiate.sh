@@ -261,7 +261,13 @@ _phase2_write_json "${catalog_body}" <<EOF
   "querySpec": {
     "offset": 0,
     "limit": 100,
-    "filterExpression": []
+    "filterExpression": [
+      {
+        "operandLeft": "https://w3id.org/edc/v0.0.1/ns/id",
+        "operator": "=",
+        "operandRight": "${ASSET_ID}"
+      }
+    ]
   }
 }
 EOF

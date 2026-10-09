@@ -71,20 +71,21 @@ Do not place runtime suffixes in commits, public examples, or filenames intended
 
 Each classified asset has `publication_profile` and `publication_safe`.
 
-- Current Ingestion API v2: `minimal_publication` → `publication_safe=true` (metadata-only projection, allowlisted JSON).
-- Current WFS and SPARQL: `standard` → `publication_safe=false` (`standard_internal`).
+- Current Ingestion API profiles (PRE, CIRCE, stable Ebro, parallel Ebro): `minimal_publication`. PRE and the PROD POST profiles can be `publication_safe=true` when the allowlisted record passes the scanner.
+- Current WFS and SPARQL: `minimal_publication` with `publication_safe=false` (`minimal_publication_internal`).
+- CSV-B2 remains `standard` / `standard_internal`.
 
 Package status is derived from the included slots, not from “the package contains a critical asset”:
 
 ```text
 package.publication_ready = all included slots are publication_safe
-package.publication_blockers = slot T1 uses standard_internal
+package.publication_blockers = slot T2 uses minimal_publication_internal
 ```
 
-- `publication_ready=true`: package policy permits publication. Manual review is still required.
+- `publication_ready=true`: the package policy permits publication. It is not authorization to distribute the package. Manual review is still required.
 - `publication_ready=false`: internal artifact. Do not share it externally.
 
-A current COMPLETE package that includes WFS or SPARQL is normally `publication_ready=false`. A current SINGLE ingestion-only package may be `publication_ready=true`.
+A current COMPLETE package that includes WFS or SPARQL is normally `publication_ready=false`. A current SINGLE ingestion-only package may be `publication_ready=true`. That status is independent of the process exit code: a correct minimal-publication ZIP is generated with `--strict` and without `--excel`, and that command exits 0 even when WFS or SPARQL keep the package internal.
 
 ZIP members live under `ippcp_evidence_package/`. Inspect status with:
 
@@ -137,13 +138,14 @@ python3 tools/export_evidence_to_excel.py \
 python3 tools/package_evidence_bundle.py \
   --config tools/evidence_export.tests.yaml \
   --tests "$COMPLETE_TESTS" \
-  --excel "$COMPLETE_WORKBOOK" \
   --timestamp "$COMPLETE_TS" \
   --export-dir "$COMPLETE_EXPORT_DIR" \
   --strict
 ```
 
-Use the same `COMPLETE_TS` for the workbook and the ZIP.
+Every slot in this selection is `minimal_publication`. Generate the workbook separately for internal review. The ZIP excludes Excel, so the packager is invoked without `--excel` and with `--strict`. A correct ZIP exits 0. `publication_ready=false` is still expected, because WFS and SPARQL stay internal. That status does not depend on the exit code, and `publication_ready=true` is not authorization to distribute the package.
+
+Use the same `COMPLETE_TS` for the workbook and the ZIP. The workbook remains beside the ZIP.
 
 ```bash
 unzip -p "$COMPLETE_ZIP" \
@@ -159,7 +161,7 @@ unzip -p "$COMPLETE_ZIP" \
 
 This assignment is deliberate: it proves slot independence. Golden Path SINGLE does not need `--only-tests`.
 
-The workbook is a local review artifact. `minimal_publication` excludes Excel from the publication ZIP, so the package command does not receive `--excel`. That allows `--strict` package validation.
+The workbook is a separate internal-review file. This slot is `minimal_publication`, so the packager does not receive `--excel` and keeps `--strict`. A correct ZIP exits 0. `publication_ready=true` for an ingestion-only slot is a policy result, not authorization to distribute the package.
 
 ```bash
 SINGLE_TS=$(date +%Y%m%d_%H%M%S)
@@ -208,11 +210,11 @@ python3 tools/export_evidence_to_excel.py \
   --strict
 ```
 
-Only T1 and T3 are selected. T2 and T4 are not filled in.
+Only T1 and T3 are selected. T2 and T4 are not filled in. Both selected assets are `minimal_publication`, so a packager invocation for this set also omits `--excel` and keeps `--strict`.
 
 ### Historical assessment preset
 
-These presets are historical. They are not the current Golden Path.
+These presets are historical. They are not the current Golden Path. `legacy_assessment` includes CSV B2, which is `standard`, so the package is not minimal-only and `--excel` remains appropriate.
 
 ```bash
 python3 tools/export_evidence_to_excel.py \
@@ -239,10 +241,11 @@ Review a package without writing a ZIP:
 python3 tools/package_evidence_bundle.py \
   --config tools/evidence_export.tests.yaml \
   --tests "$COMPLETE_TESTS" \
-  --excel "$COMPLETE_WORKBOOK" \
   --dry-run \
   --verbose
 ```
+
+This dry-run uses the COMPLETE selection, so it also omits `--excel`.
 
 Expected COMPLETE files:
 
@@ -274,7 +277,7 @@ Every package includes, under `ippcp_evidence_package/`:
 - `package_status.json` (`publication_ready`, `publication_blockers`, per-slot inventory fields);
 - `slot_inventory.json`.
 
-`standard` slots may include sanitized copies of selected run artifacts. Those copies may retain real identifiers, local paths, global snapshots, and cross-asset references. `minimal_publication` slots include only allowlisted JSON (`sanitized_summary.json`, `sanitized_manifest.json`, `validation_status.json`) under the slot folder. Downloaded payloads are forbidden for those slots. Excel is not added to a package that contains only `minimal_publication` slots, which is why Golden Path SINGLE does not pass `--excel` to the packager.
+`standard` slots may include sanitized copies of selected run artifacts. Those copies may retain real identifiers, local paths, global snapshots, and cross-asset references. `minimal_publication` slots include only allowlisted JSON (`sanitized_summary.json`, `sanitized_manifest.json`, `validation_status.json`) under the slot folder. Downloaded payloads are forbidden for those slots. Excel is not added to a package that contains only `minimal_publication` slots. COMPLETE and SINGLE therefore omit `--excel`. A selection that still includes a `standard` slot, such as `legacy_assessment`, may pass `--excel`.
 
 ## Security boundary
 

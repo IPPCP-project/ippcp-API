@@ -149,16 +149,23 @@ class Phase1DataAddressTests(unittest.TestCase):
         self.assertEqual(built["raw"]["dataAddress"]["method"], "POST")
         self.assertEqual(built["raw"]["dataAddress"]["proxyBody"], "true")
 
-    def test_post_config_provider_id_ignores_stale_env(self) -> None:
-        """Stale INGESTA_API_PROVIDER_ID=1 must not publish CIRCE as provider 1."""
-        built = self._build_request(
-            "asset_configs/real/ingesta/ingesta_api_pull_circe_prod.json",
-            api_key="CANARY-API-KEY-POST-CIRCE-STALE-ENV",
-            provider_id="1",
+    def test_post_config_provider_id_rejects_conflicting_env(self) -> None:
+        """A stale INGESTA_API_PROVIDER_ID must not override or be ignored for CIRCE."""
+        script = textwrap.dedent(
+            """
+            set -euo pipefail
+            export SUFFIX=testsuffix
+            export INGESTA_API_KEY=CANARY-API-KEY-POST-CIRCE-STALE-ENV
+            export INGESTA_API_PROVIDER_ID=1
+            export ASSET_CONFIG=asset_configs/real/ingesta/ingesta_api_pull_circe_prod.json
+            source scripts/phase1_provider_publish.sh
+            api_find_root
+            _phase1_load_asset_config
+            """
         )
-        self.assertEqual(built["raw"]["@id"], "ippcp-ingesta-pull-circe-prod")
-        self.assertEqual(built["raw"]["dataAddress"]["header:X-Provider-Id"], "2")
-        self.assertNotEqual(built["raw"]["dataAddress"]["header:X-Provider-Id"], "1")
+        result = _run_bash(script)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("no coincide con provider_id", result.stderr)
 
 
 class Phase4PostSupportTests(unittest.TestCase):

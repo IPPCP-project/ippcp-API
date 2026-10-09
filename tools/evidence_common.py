@@ -61,6 +61,45 @@ MINIMAL_PUBLICATION_PLACEHOLDER_IDENTIFIERS = {
     "agreement_id": "<agreement-id>",
     "transfer_process_id": "<transfer-process-id>",
 }
+TECHNICAL_EVIDENCE_KEYS = (
+    "profile_name",
+    "company_or_subtype",
+    "run_id",
+    "execution_date",
+    "asset_id",
+    "asset_provenance",
+    "provider_id",
+    "negotiation_state",
+    "agreement_http_status",
+    "transfer_type",
+    "transfer_state",
+    "edr_retrieval",
+    "edr_http_status",
+    "data_plane_http_status",
+    "evidence_type",
+    "media_type",
+    "request_body_bytes",
+    "response_body_bytes",
+    "response_media_type",
+    "business_post_count",
+    "auth_candidate_label",
+    "sha256",
+    "structural_note",
+)
+NEGOTIATION_STATES = {"FINALIZED", "VERIFIED", "AGREED", "VERIFYING", "TERMINATED"}
+TRANSFER_STATES = {"STARTED", "COMPLETED", "FINALIZED", "TERMINATED"}
+ALLOWED_AUTH_LABELS = {
+    "authorization",
+    "authorization_raw",
+    "authorization_bearer",
+    "authorization_authtype",
+}
+PHASE1_ENV_ALLOWLIST = {
+    "PHASE1_ASSET_ORIGIN",
+    "ASSET_ID",
+    "ASSET_PROVIDER_ID",
+    "IPPCP_PHASE1_REUSE_EXISTING",
+}
 MINIMAL_PUBLICATION_DEFAULT_FLOW_LABEL = "Ingestion API v2"
 MINIMAL_PUBLICATION_ALLOWED_STATUSES = {"ok", "failed", "skipped", "not_found", "passed", MINIMAL_PUBLICATION_NOT_RECORDED, MINIMAL_PUBLICATION_NOT_APPLICABLE}
 MINIMAL_PUBLICATION_OOXML_ALLOWED_PARTS = {
@@ -233,11 +272,250 @@ class MinimalPublicationModel:
     download_persisted: bool = False
     not_recorded: str = MINIMAL_PUBLICATION_NOT_RECORDED
     not_applicable: str = MINIMAL_PUBLICATION_NOT_APPLICABLE
+    technical_evidence: Dict[str, str] = field(default_factory=dict)
 
 
 def canonical_minimal_publication_status(value: Any) -> str:
     normalized = str(value or NOT_FOUND).lower()
     return normalized if normalized in MINIMAL_PUBLICATION_ALLOWED_STATUSES else NOT_FOUND
+
+
+def _complete_technical_evidence(raw: Optional[Dict[str, str]]) -> Dict[str, str]:
+    source = raw or {}
+    return {
+        key: str(source.get(key) or MINIMAL_PUBLICATION_NOT_RECORDED)
+        for key in TECHNICAL_EVIDENCE_KEYS
+    }
+
+
+def _http_code(value: Any) -> str:
+    if isinstance(value, bool) or value in (None, ""):
+        return ""
+    text = str(value).strip()
+    return text if re.fullmatch(r"[1-5][0-9]{2}", text) else ""
+
+
+def _nonnegative_int_text(value: Any) -> str:
+    if isinstance(value, bool) or value in (None, ""):
+        return ""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return ""
+    if number < 0:
+        return ""
+    return str(number)
+
+
+def _is_private_path(value: str) -> bool:
+    return value.startswith("/") or value.startswith("\\") or "/Users/" in value or "/home/" in value
+
+
+def _sha256_text(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = value.strip().lower()
+    return text if re.fullmatch(r"[0-9a-f]{64}", text) else ""
+
+
+def read_allowlisted_phase1_env(path: Path) -> Dict[str, str]:
+    """Read only non-secret Phase 1 identity keys. Never return other lines."""
+    found: Dict[str, str] = {}
+    if not path.is_file():
+        return found
+    for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+        raw = line.strip()
+        if not raw or raw.startswith("#"):
+            continue
+        if raw.startswith("export "):
+            raw = raw[len("export ") :].strip()
+        if "=" not in raw:
+            continue
+        key, value = raw.split("=", 1)
+        if key not in PHASE1_ENV_ALLOWLIST:
+            continue
+        found[key] = value.strip().strip('"').strip("'")
+    return found
+
+
+def _read_status_http_file(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    lines = path.read_text(encoding="utf-8", errors="replace").strip().splitlines()
+    if not lines:
+        return ""
+    return _http_code(lines[0].strip())
+
+
+def collect_safe_run_facts(loader: EvidenceRunLoader) -> Dict[str, Any]:
+    """Allowlisted identity and traceability facts. Omits endpoints, tokens and paths."""
+    parser = loader.parser or SummaryParser(loader.summary)
+    create_asset = parser.get_step("phase1", "create_asset") or {}
+    get_asset = parser.get_step("phase1b", "get_asset") or parser.get_step("phase1", "get_asset") or {}
+    verify = parser.get_step("phase1", "verify_existing_asset") or {}
+    post_manifest = _load_json_object(loader.run_dir / "phase4" / "post_manifest.json")
+    post_result = _load_json_object(loader.run_dir / "phase4" / "post_result.json")
+    download_manifest = _load_json_object(loader.run_dir / "phase4" / "download_manifest.json")
+    env = read_allowlisted_phase1_env(loader.run_dir / "phase1_env.sh")
+    summary = loader.summary
+
+    def add_text(bucket: List[str], value: Any) -> None:
+        if value in (None, "", NOT_FOUND):
+            return
+        text = str(value).strip()
+        if text and text not in bucket:
+            bucket.append(text)
+
+    asset_ids: List[str] = []
+    for value in (
+        create_asset.get("asset_id"),
+        get_asset.get("asset_id"),
+        verify.get("asset_id"),
+        summary.get("asset_id"),
+        download_manifest.get("asset_id") if isinstance(download_manifest, dict) else None,
+        post_manifest.get("asset_id") if isinstance(post_manifest, dict) else None,
+        env.get("ASSET_ID"),
+    ):
+        add_text(asset_ids, value)
+    origins: List[str] = []
+    for value in (
+        verify.get("asset_origin"),
+        create_asset.get("asset_origin"),
+        env.get("PHASE1_ASSET_ORIGIN"),
+    ):
+        add_text(origins, value)
+    providers: List[str] = []
+    for value in (create_asset.get("provider_id"), verify.get("provider_id"), env.get("ASSET_PROVIDER_ID")):
+        add_text(providers, value)
+
+    contradiction = ""
+    if len(asset_ids) > 1:
+        contradiction = "asset_id"
+    elif len(origins) > 1:
+        contradiction = "provenance"
+    elif len(providers) > 1:
+        contradiction = "provider_id"
+
+    slugs: List[str] = []
+    for value in (
+        create_asset.get("asset_slug"),
+        verify.get("asset_slug"),
+        summary.get("asset_slug"),
+        download_manifest.get("asset_slug") if isinstance(download_manifest, dict) else None,
+    ):
+        add_text(slugs, value)
+    configs: List[str] = []
+    config_private = False
+    for value in (
+        create_asset.get("asset_config"),
+        verify.get("asset_config"),
+        summary.get("asset_config"),
+    ):
+        if value in (None, "", NOT_FOUND):
+            continue
+        text = str(value).strip()
+        if _is_private_path(text):
+            config_private = True
+            continue
+        add_text(configs, text)
+
+    http_method = ""
+    for source in (post_manifest, post_result, create_asset):
+        if isinstance(source, dict) and source.get("http_method"):
+            http_method = str(source.get("http_method"))
+            break
+    post_only = isinstance(post_manifest, dict) and post_manifest.get("manifest_kind") == "post_metadata_only"
+    request_bytes = ""
+    response_bytes = ""
+    response_media = ""
+    business_count = ""
+    auth_label = ""
+    size_conflict = ""
+    for source in (post_manifest, post_result):
+        if not isinstance(source, dict):
+            continue
+        candidate_request = _nonnegative_int_text(source.get("request_body_bytes"))
+        candidate_response = _nonnegative_int_text(source.get("response_bytes"))
+        if request_bytes and candidate_request and request_bytes != candidate_request:
+            size_conflict = "request_body_bytes"
+        elif candidate_request:
+            request_bytes = request_bytes or candidate_request
+        if response_bytes and candidate_response and response_bytes != candidate_response:
+            size_conflict = size_conflict or "response_bytes"
+        elif candidate_response:
+            response_bytes = response_bytes or candidate_response
+        if not response_media and isinstance(source.get("response_media_type"), str):
+            media = source.get("response_media_type").strip()
+            if media and "://" not in media and not _is_private_path(media):
+                response_media = media
+        candidate_count = _nonnegative_int_text(source.get("business_post_count"))
+        if business_count and candidate_count and business_count != candidate_count:
+            size_conflict = size_conflict or "business_post_count"
+        elif candidate_count:
+            business_count = business_count or candidate_count
+        label = source.get("auth_candidate_label")
+        if not auth_label and isinstance(label, str) and label in ALLOWED_AUTH_LABELS:
+            auth_label = label
+    if size_conflict and not contradiction:
+        contradiction = size_conflict
+
+    negotiation = parser.get_step("phase2", "negotiation_finalized") or {}
+    negotiation_state = str(negotiation.get("final_state") or "")
+    if negotiation_state not in NEGOTIATION_STATES:
+        negotiation_state = ""
+    agreement = parser.get_step("phase2", "get_contract_agreement") or {}
+    transfer = parser.get_step("phase3", "transfer_final_state") or {}
+    transfer_state = str(transfer.get("final_state") or "")
+    if transfer_state not in TRANSFER_STATES:
+        transfer_state = ""
+    edr = parser.get_step("phase4", "edr_obtained") or parser.get_step("phase3", "edr_obtained") or {}
+    edr_http = _http_code(edr.get("http"))
+    edr_retrieval = ""
+    if edr:
+        edr_retrieval = "succeeded" if edr.get("status") == "ok" and edr_http.startswith("2") else "not_confirmed"
+    data_plane_http = _read_status_http_file(loader.run_dir / "phase4" / "40_data_response.http")
+    started = str(summary.get("started_at") or "")
+    date_match = re.match(r"(\d{4}-\d{2}-\d{2})", started)
+    save_download = parser.get_step("phase4", "save_download") or {}
+    structural_parts = []
+    for key in ("feature_count", "numberReturned", "numberMatched", "binding_count"):
+        number = _nonnegative_int_text(save_download.get(key))
+        if number:
+            structural_parts.append(f"{key}={number}")
+    sha = ""
+    if isinstance(download_manifest, dict):
+        sha = _sha256_text(download_manifest.get("sha256"))
+    if not sha:
+        sha = _sha256_text(save_download.get("sha256"))
+
+    return {
+        "contradiction": contradiction,
+        "asset_id": asset_ids[0] if len(asset_ids) == 1 else "",
+        "asset_slug": slugs[0] if slugs else "",
+        "asset_config": configs[0] if configs else "",
+        "asset_config_private": config_private,
+        "asset_origin": origins[0] if len(origins) == 1 else "",
+        "provider_id": providers[0] if len(providers) == 1 else "",
+        "created_asset": bool(create_asset),
+        "verified_existing_step": bool(verify),
+        "http_method": http_method,
+        "post_metadata_only": post_only,
+        "request_body_bytes": request_bytes,
+        "response_body_bytes": response_bytes,
+        "response_media_type": response_media,
+        "business_post_count": business_count,
+        "auth_candidate_label": auth_label,
+        "negotiation_state": negotiation_state,
+        "agreement_http_status": _http_code(agreement.get("http")),
+        "transfer_state": transfer_state,
+        "edr_http_status": edr_http,
+        "edr_retrieval": edr_retrieval,
+        "data_plane_http_status": data_plane_http,
+        "execution_date": date_match.group(1) if date_match else "",
+        "structural_note": ",".join(structural_parts),
+        "sha256": sha,
+        "reuse_existing": env.get("IPPCP_PHASE1_REUSE_EXISTING", ""),
+    }
 
 
 def build_minimal_publication_model(
@@ -263,6 +541,8 @@ def build_minimal_publication_model(
     request_body_persisted: bool = False,
     response_body_persisted: bool = False,
     download_persisted: bool = False,
+    sha256_value: Optional[str] = None,
+    technical_evidence: Optional[Dict[str, str]] = None,
 ) -> MinimalPublicationModel:
     """Build and validate the canonical minimal publication model."""
     phases = {
@@ -290,7 +570,12 @@ def build_minimal_publication_model(
         byte_count=safe_byte_count,
         sha256_algorithm="SHA-256",
         sha256_verified=bool(sha256_verified),
-        sha256_value=MINIMAL_PUBLICATION_WITHHELD_HASH,
+        sha256_value=(
+            str(sha256_value)
+            if sha256_value not in (None, "")
+            else MINIMAL_PUBLICATION_WITHHELD_HASH
+        ),
+        technical_evidence=_complete_technical_evidence(technical_evidence),
         semantic_validation_status=(
             canonical_minimal_publication_status(semantic_validation_status)
             if semantic_validation_recorded
@@ -334,10 +619,23 @@ def validate_minimal_publication_model(model: MinimalPublicationModel) -> List[s
         findings.append("technical status differs from approved capability label")
     if not model.public_flow_label:
         findings.append("public flow label missing")
-    if model.sha256_value != MINIMAL_PUBLICATION_WITHHELD_HASH:
-        findings.append("hash value is not withheld")
+    if set(model.technical_evidence) != set(TECHNICAL_EVIDENCE_KEYS):
+        findings.append("technical evidence inventory differs from the allowlist")
+    hash_text = model.sha256_value or ""
+    hash_is_digest = bool(re.fullmatch(r"[0-9a-fA-F]{64}", hash_text))
+    if model.delivery_mode == "post_metadata_only":
+        if hash_is_digest or model.sha256_verified:
+            findings.append("post metadata-only must not carry a response hash")
+        if hash_text not in {
+            MINIMAL_PUBLICATION_NOT_APPLICABLE,
+            MINIMAL_PUBLICATION_NOT_RECORDED,
+            MINIMAL_PUBLICATION_WITHHELD_HASH,
+        }:
+            findings.append("post hash value is not an explicit absence")
+    elif model.sha256_verified and hash_text not in {MINIMAL_PUBLICATION_WITHHELD_HASH} and not hash_is_digest:
+        findings.append("verified hash is not a SHA-256 digest")
     if model.execution_identifiers != MINIMAL_PUBLICATION_PLACEHOLDER_IDENTIFIERS:
-        findings.append("execution identifiers differ from placeholders")
+        findings.append("operational identifiers differ from placeholders")
     if model.payload_included:
         findings.append("payload must be excluded")
     if model.delivery_mode not in {"download", "post_metadata_only"}:
@@ -364,6 +662,7 @@ def validate_minimal_publication_model(model: MinimalPublicationModel) -> List[s
         model.semantic_validation_source,
         *model.phase_statuses.values(),
         *model.execution_identifiers.values(),
+        *model.technical_evidence.values(),
     ):
         findings.extend(PublicationScanner.findings(str(value)))
     return findings
@@ -952,6 +1251,50 @@ def _find_first_value(data: Any, keys: Set[str]) -> Any:
     return None
 
 
+def technical_evidence_from_facts(
+    facts: Dict[str, Any],
+    spec: TestSpec,
+    *,
+    evidence_type: str,
+) -> Dict[str, str]:
+    """Projection of allowlisted technical facts. Missing values stay explicit."""
+    absent = MINIMAL_PUBLICATION_NOT_RECORDED
+    unused = MINIMAL_PUBLICATION_NOT_APPLICABLE
+    post = evidence_type == "post_metadata_only"
+
+    def present(value: str, fallback: str = absent) -> str:
+        return value if value else fallback
+
+    return {
+        "profile_name": spec.display_name or absent,
+        "company_or_subtype": spec.variant or absent,
+        "run_id": spec.suffix or absent,
+        "execution_date": present(str(facts.get("execution_date") or "")),
+        "asset_id": present(str(facts.get("asset_id") or "")),
+        "asset_provenance": present(str(facts.get("asset_origin") or "")),
+        "provider_id": present(str(facts.get("provider_id") or "")),
+        "negotiation_state": present(str(facts.get("negotiation_state") or "")),
+        "agreement_http_status": present(str(facts.get("agreement_http_status") or "")),
+        "transfer_type": spec.transport or spec.expected_transfer_type or absent,
+        "transfer_state": present(str(facts.get("transfer_state") or "")),
+        "edr_retrieval": present(str(facts.get("edr_retrieval") or "")),
+        "edr_http_status": present(str(facts.get("edr_http_status") or "")),
+        "data_plane_http_status": present(str(facts.get("data_plane_http_status") or "")),
+        "evidence_type": evidence_type,
+        "media_type": spec.expected_media_type or absent,
+        "request_body_bytes": present(str(facts.get("request_body_bytes") or ""), unused if not post else absent),
+        "response_body_bytes": present(
+            str(facts.get("response_body_bytes") or ""),
+            unused if not post else absent,
+        ),
+        "response_media_type": present(str(facts.get("response_media_type") or ""), unused if not post else absent),
+        "business_post_count": present(str(facts.get("business_post_count") or ""), unused if not post else absent),
+        "auth_candidate_label": present(str(facts.get("auth_candidate_label") or ""), unused if not post else absent),
+        "sha256": unused if post else present(str(facts.get("sha256") or "")),
+        "structural_note": present(str(facts.get("structural_note") or "")),
+    }
+
+
 def extract_minimal_publication_model(
     loader: EvidenceRunLoader, spec: TestSpec
 ) -> MinimalPublicationModel:
@@ -974,11 +1317,8 @@ def extract_minimal_publication_model(
         phase: parser.phase_status(phase)
         for phase in ("phase0", "phase1", "phase2", "phase3", "phase4")
     }
-    flow_type = (
-        "ingestion-api-v2"
-        if spec.asset_key in {"", "ingestion_api_v2"}
-        else spec.asset_key
-    )
+    flow_type = spec.asset_key or "ingestion-api-v2"
+    facts = collect_safe_run_facts(loader)
     if is_post_metadata_only:
         post_status = None
         if isinstance(post_result, dict):
@@ -1015,13 +1355,19 @@ def extract_minimal_publication_model(
             request_body_persisted=False,
             response_body_persisted=False,
             download_persisted=False,
+            sha256_value=MINIMAL_PUBLICATION_NOT_APPLICABLE,
+            technical_evidence=technical_evidence_from_facts(
+                facts, spec, evidence_type="post_metadata_only"
+            ),
         )
 
     manifest = _load_json_object(
         loader.run_dir / "phase4" / "download_manifest.json"
     )
-    source_hash = _find_first_value(manifest, {"sha256", "sha_256"})
+    source_hash = _sha256_text(_find_first_value(manifest, {"sha256", "sha_256"}))
     download_step = parser.get_step("phase4", "save_download") or {}
+    if not facts.get("sha256") and source_hash:
+        facts["sha256"] = source_hash
     return build_minimal_publication_model(
         test_id=spec.test_id,
         asset_type=spec.asset_type,
@@ -1033,12 +1379,16 @@ def extract_minimal_publication_model(
         byte_count=_find_first_value(
             manifest, {"bytes", "size_bytes", "byte_count"}
         ),
-        sha256_verified=isinstance(source_hash, str) and bool(source_hash.strip()),
+        sha256_verified=bool(facts.get("sha256")),
+        sha256_value=str(facts.get("sha256") or MINIMAL_PUBLICATION_NOT_RECORDED),
         semantic_validation_status=semantic.get("status") if isinstance(semantic, dict) else None,
         semantic_validation_recorded=bool(semantic),
         public_flow_label=spec.display_name or MINIMAL_PUBLICATION_DEFAULT_FLOW_LABEL,
         flow_type=flow_type,
         delivery_mode="download",
+        technical_evidence=technical_evidence_from_facts(
+            facts, spec, evidence_type="download"
+        ),
     )
 
 
@@ -1208,7 +1558,6 @@ class PublicationScanner:
             ("concrete_url", cls.URL_RE),
             ("absolute_path", cls.ABSOLUTE_PATH_RE),
             ("uuid", cls.UUID_RE),
-            ("real_suffix", cls.REAL_SUFFIX_RE),
             ("generic_canary", cls.CANARY_RE),
         )
         for label, pattern in checks:

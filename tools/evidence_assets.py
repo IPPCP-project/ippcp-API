@@ -22,11 +22,17 @@ from evidence_common import (
     TestSpec,
     _find_first_value,
     _load_json_object,
+    collect_safe_run_facts,
 )
 
 
 STANDARD_PUBLICATION_PROFILE = "standard"
 CLASSIFICATION_STRONG_SCORE = 80
+PRE_SLUG = "ippcp_ingesta_api_pull_pre_api_key"
+CIRCE_SLUG = "ippcp_ingesta_pull_circe_prod"
+CIRCE_ASSET_ID = "ippcp-ingesta-pull-circe-prod"
+EBRO_SLUG = "ippcp_ingesta_pull_industrias_ebro_prod"
+EBRO_STABLE_ASSET_ID = "ippcp-ingesta-pull-industrias-ebro-prod"
 
 CSV_B2_PHASES = ["phase0", "phase1b", "phase2", "phase3b", "phase4b"]
 HTTP_PULL_PHASES = ["phase0", "phase1", "phase2", "phase3", "phase4"]
@@ -79,6 +85,7 @@ class AssetDefinition:
     asset_id_prefixes: Tuple[str, ...] = ()
     asset_id_patterns: Tuple[str, ...] = ()
     validator: str = ""
+    identity: str = ""
 
 
 @dataclass
@@ -96,6 +103,12 @@ class RunSignals:
     requires_api_key_header: Optional[bool] = None
     storage_mode: str = ""
     sources: Dict[str, str] = field(default_factory=dict)
+    asset_origin: str = ""
+    http_method: str = ""
+    provider_id: str = ""
+    created_asset: bool = False
+    post_metadata_only: bool = False
+    contradiction: str = ""
 
 
 @dataclass(frozen=True)
@@ -166,6 +179,7 @@ def load_asset_registry(config: Dict[str, Any]) -> Dict[str, AssetDefinition]:
                 str(item) for item in (match.get("asset_id_patterns") or ())
             ),
             validator=str(raw.get("validator") or key),
+            identity=str(match.get("identity") or ""),
         )
     return registry
 
@@ -274,6 +288,37 @@ def extract_run_signals(loader: EvidenceRunLoader) -> RunSignals:
         "media_type": "structured-metadata" if media_type else "",
         "transfer_type": "structured-metadata" if transfer_type else "",
     }
+    facts = collect_safe_run_facts(loader)
+    contradiction = str(facts.get("contradiction") or "")
+    if facts.get("asset_id"):
+        if asset_id and asset_id != facts["asset_id"]:
+            contradiction = contradiction or "asset_id"
+        else:
+            asset_id = str(facts["asset_id"])
+    if facts.get("asset_slug") and not asset_slug:
+        asset_slug = str(facts["asset_slug"])
+    if facts.get("asset_config_private"):
+        asset_config = ""
+    elif facts.get("asset_config") and not asset_config:
+        asset_config = str(facts["asset_config"])
+    if (
+        facts.get("asset_origin") == "verified_existing"
+        and suffix
+        and asset_id.endswith(f"-{suffix}")
+        and asset_id not in {CIRCE_ASSET_ID, EBRO_STABLE_ASSET_ID}
+    ):
+        contradiction = contradiction or "provenance"
+    if asset_id == CIRCE_ASSET_ID and facts.get("provider_id") not in {"", "2"}:
+        contradiction = contradiction or "provider_id"
+    if asset_id in {EBRO_STABLE_ASSET_ID} or (
+        asset_slug == EBRO_SLUG and asset_id.endswith(f"-{suffix}") if suffix else False
+    ):
+        if facts.get("provider_id") not in {"", "1"}:
+            contradiction = contradiction or "provider_id"
+    if facts.get("reuse_existing") == "1" and facts.get("asset_origin") == "published_this_run":
+        contradiction = contradiction or "provenance"
+    if facts.get("reuse_existing") == "0" and facts.get("asset_origin") == "verified_existing":
+        contradiction = contradiction or "provenance"
     return RunSignals(
         suffix=suffix,
         asset_id=asset_id,
@@ -288,6 +333,12 @@ def extract_run_signals(loader: EvidenceRunLoader) -> RunSignals:
         requires_api_key_header=requires_flag,
         storage_mode=storage_mode,
         sources=sources,
+        asset_origin=str(facts.get("asset_origin") or ""),
+        http_method=str(facts.get("http_method") or ""),
+        provider_id=str(facts.get("provider_id") or ""),
+        created_asset=bool(facts.get("created_asset")),
+        post_metadata_only=bool(facts.get("post_metadata_only")),
+        contradiction=contradiction,
     )
 
 
@@ -307,7 +358,46 @@ def _matches_any_pattern(value: str, patterns: Tuple[str, ...]) -> bool:
     return bool(value) and any(fnmatch.fnmatchcase(value, pattern) for pattern in patterns)
 
 
+def _identity_matches(identity: str, signals: RunSignals) -> bool:
+    """Require several consistent signals. A name fragment is not enough."""
+    if identity == "pre_get":
+        slug_ok = signals.asset_slug == PRE_SLUG or signals.asset_id.startswith(f"{PRE_SLUG}-")
+        return bool(
+            slug_ok
+            and signals.asset_origin != "verified_existing"
+            and not signals.post_metadata_only
+        )
+    if identity == "circe_stable":
+        return bool(
+            signals.asset_id == CIRCE_ASSET_ID
+            and signals.asset_origin == "verified_existing"
+            and not signals.created_asset
+            and signals.provider_id in {"", "2"}
+        )
+    if identity == "ebro_stable":
+        return bool(
+            signals.asset_id == EBRO_STABLE_ASSET_ID
+            and signals.http_method in {"", "POST"}
+            and signals.provider_id in {"", "1"}
+            and signals.asset_origin != "verified_existing"
+        )
+    if identity == "ebro_parallel":
+        return bool(
+            signals.asset_slug == EBRO_SLUG
+            and signals.suffix
+            and signals.asset_id == f"{EBRO_SLUG}-{signals.suffix}"
+            and signals.http_method == "POST"
+            and signals.asset_origin == "published_this_run"
+            and signals.post_metadata_only
+            and signals.provider_id in {"", "1"}
+            and signals.asset_id != EBRO_STABLE_ASSET_ID
+        )
+    return False
+
+
 def score_asset(asset: AssetDefinition, signals: RunSignals) -> int:
+    if asset.identity and not _identity_matches(asset.identity, signals):
+        return 0
     score = 0
     if signals.asset_slug:
         if signals.asset_slug in asset.asset_slugs or _matches_any_pattern(
@@ -365,6 +455,8 @@ def classify_run(
     signals = extract_run_signals(loader)
     slot_id = slot or loader.spec.test_id
     suffix = signals.suffix or loader.spec.suffix
+    if signals.contradiction:
+        raise ClassificationError(slot_id, suffix, "contradictory", detail=signals.contradiction)
     scored = [(score_asset(asset, signals), asset) for asset in registry.values()]
     strong = [(score, asset) for score, asset in scored if score >= CLASSIFICATION_STRONG_SCORE]
     if not strong:
@@ -742,7 +834,7 @@ def publication_status_label(spec: TestSpec) -> str:
         return profile
     if profile == STANDARD_PUBLICATION_PROFILE:
         return "standard_internal"
-    return profile
+    return f"{profile}_internal"
 
 
 def package_publication_status(specs: Sequence[TestSpec]) -> Dict[str, Any]:

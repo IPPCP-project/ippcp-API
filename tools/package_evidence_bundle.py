@@ -51,6 +51,43 @@ from evidence_common import (
 
 
 PACKAGE_ROOT = "ippcp_evidence_package"
+
+
+def unsafe_publication_member(zip_path: str) -> bool:
+    """Raw diagnostic names that must keep a package out of external publication."""
+    name = Path(zip_path).name.lower()
+    if name == "summary.json":
+        return True
+    markers = (
+        "jwt_claims",
+        "dataaddress",
+        "00_context",
+        "_env.sh",
+        "request_body",
+        "response_body",
+        ".body",
+    )
+    return any(marker in name for marker in markers)
+
+
+def apply_unsafe_member_blockers(publication: Dict[str, Any], rows: List[Dict[str, Any]]) -> List[str]:
+    unsafe = []
+    for row in rows:
+        if not row.get("included"):
+            continue
+        zip_path = str(row.get("zip_path") or "")
+        if unsafe_publication_member(zip_path):
+            unsafe.append(Path(zip_path).name)
+    if not unsafe:
+        return []
+    publication["publication_ready"] = False
+    blockers = list(publication.get("publication_blockers") or [])
+    for name in sorted(set(unsafe)):
+        blocker = f"unsafe raw member included: {name}"
+        if blocker not in blockers:
+            blockers.append(blocker)
+    publication["publication_blockers"] = blockers
+    return blockers
 MINIMAL_PUBLICATION_FILES = {
     "sanitized_summary.json",
     "sanitized_manifest.json",
@@ -83,6 +120,31 @@ MINIMAL_PUBLICATION_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "agreement_id": None,
             "transfer_process_id": None,
         },
+        "technical_evidence": {
+            "profile_name": None,
+            "company_or_subtype": None,
+            "run_id": None,
+            "execution_date": None,
+            "asset_id": None,
+            "asset_provenance": None,
+            "provider_id": None,
+            "negotiation_state": None,
+            "agreement_http_status": None,
+            "transfer_type": None,
+            "transfer_state": None,
+            "edr_retrieval": None,
+            "edr_http_status": None,
+            "data_plane_http_status": None,
+            "evidence_type": None,
+            "media_type": None,
+            "request_body_bytes": None,
+            "response_body_bytes": None,
+            "response_media_type": None,
+            "business_post_count": None,
+            "auth_candidate_label": None,
+            "sha256": None,
+            "structural_note": None,
+        },
         "phases": {
             "phase0": {"status": None},
             "phase1": {"status": None},
@@ -111,6 +173,11 @@ MINIMAL_PUBLICATION_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "request_body_persisted": None,
             "response_body_persisted": None,
             "download_persisted": None,
+            "request_body_bytes": None,
+            "response_body_bytes": None,
+            "response_media_type": None,
+            "business_post_count": None,
+            "auth_candidate_label": None,
         },
     },
     "validation_status.json": {
@@ -125,6 +192,8 @@ MINIMAL_PUBLICATION_JSON_SCHEMAS: Dict[str, Dict[str, Any]] = {
             "raw_requests_responses_excluded": None,
             "identifiers_replaced": None,
             "hash_value_withheld": None,
+            "technical_identifiers_recorded": None,
+            "operational_identifiers_withheld": None,
         },
     },
 }
@@ -402,6 +471,7 @@ def build_minimal_publication_documents(
                 "technical_consumer_connector": model.technical_consumer_connector,
             },
             "execution_identifiers": dict(model.execution_identifiers),
+            "technical_evidence": dict(model.technical_evidence),
             "phases": {
                 phase: {"status": model.phase_statuses[phase]}
                 for phase in ("phase0", "phase1", "phase2", "phase3", "phase4")
@@ -431,6 +501,11 @@ def build_minimal_publication_documents(
                 "request_body_persisted": model.request_body_persisted,
                 "response_body_persisted": model.response_body_persisted,
                 "download_persisted": model.download_persisted,
+                "request_body_bytes": model.technical_evidence["request_body_bytes"],
+                "response_body_bytes": model.technical_evidence["response_body_bytes"],
+                "response_media_type": model.technical_evidence["response_media_type"],
+                "business_post_count": model.technical_evidence["business_post_count"],
+                "auth_candidate_label": model.technical_evidence["auth_candidate_label"],
             },
         },
         "validation_status.json": {
@@ -444,7 +519,13 @@ def build_minimal_publication_documents(
                 "phase_environment_excluded": True,
                 "raw_requests_responses_excluded": True,
                 "identifiers_replaced": True,
-                "hash_value_withheld": True,
+                "hash_value_withheld": model.delivery_mode == "post_metadata_only" or not model.sha256_verified,
+                "technical_identifiers_recorded": model.technical_evidence.get("run_id") not in {
+                    "",
+                    "not_recorded",
+                    "<run-id>",
+                },
+                "operational_identifiers_withheld": True,
             },
         },
     }
@@ -891,6 +972,12 @@ def main() -> int:
             else:
                 add_manifest_row(rows, test_id="_package", source_path=relative_to_repo(repo_root, excel_path), category="excel", included=False, exclusion_reason="missing")
                 warnings.append(f"Excel not found: {excel_path}")
+
+        extra_blockers = apply_unsafe_member_blockers(publication, rows)
+        for blocker in extra_blockers:
+            print(f"  {blocker}", file=sys.stderr)
+        if extra_blockers:
+            print("package.publication_ready=false")
 
         inventory_path = staging_root / "slot_inventory.json"
         inventory_path.write_text(json.dumps(slot_rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

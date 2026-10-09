@@ -93,13 +93,14 @@ python3 tools/export_evidence_to_excel.py \
 python3 tools/package_evidence_bundle.py \
   --config tools/evidence_export.tests.yaml \
   --tests "$COMPLETE_TESTS" \
-  --excel "$COMPLETE_WORKBOOK" \
   --timestamp "$COMPLETE_TS" \
   --export-dir "$COMPLETE_EXPORT_DIR" \
   --strict
 ```
 
-Do not recompute `COMPLETE_TS` between workbook and ZIP.
+Every slot in this selection is `minimal_publication`. The workbook is generated separately for internal review. The ZIP excludes Excel, so the packager is invoked without `--excel` and with `--strict`. A correct ZIP exits 0. `publication_ready=false` is still expected because WFS and SPARQL are internal (`minimal_publication_internal`). That status is independent of the exit code. `publication_ready=true` is not authorization to distribute the package.
+
+Do not recompute `COMPLETE_TS` between the workbook and the ZIP. The workbook remains beside the ZIP.
 
 Inspect:
 
@@ -110,7 +111,7 @@ unzip -p "$COMPLETE_ZIP" ippcp_evidence_package/slot_inventory.json | jq .
 
 ## SINGLE (one slot)
 
-Example with Ingestion API in T3:
+Example with Ingestion API in T3. Generate the workbook separately for internal review. The slot is `minimal_publication`, so the packager is invoked without `--excel` and with `--strict`. A correct ZIP exits 0. `publication_ready` follows the classified asset. A true value is not authorization for external distribution.
 
 ```bash
 SINGLE_TS=$(date +%Y%m%d_%H%M%S)
@@ -149,9 +150,11 @@ python3 tools/export_evidence_to_excel.py \
   --strict
 ```
 
+Both selected assets are `minimal_publication`. A packager invocation for this set omits `--excel` and keeps `--strict`.
+
 ## Preset export and packaging (`legacy_assessment`)
 
-Export and package with the **same timestamp** (do not recompute between workbook and ZIP):
+Export and package with the **same timestamp** (do not recompute between workbook and ZIP). This preset includes CSV B2, which is `standard`, so the package is not minimal-only and `--excel` remains appropriate:
 
 ```bash
 TS=$(date +%Y%m%d_%H%M%S)
@@ -284,10 +287,11 @@ python3 tools/package_evidence_bundle.py \
 python3 tools/package_evidence_bundle.py \
   --config tools/evidence_export.tests.yaml \
   --tests "$COMPLETE_TESTS" \
-  --excel "$COMPLETE_WORKBOOK" \
   --dry-run \
   --verbose
 ```
+
+The COMPLETE selection is minimal-publication only, so this dry-run also omits `--excel`.
 
 ## CLI flags
 
@@ -341,10 +345,12 @@ python3 tools/package_evidence_bundle.py \
 package.publication_ready = all included slots are publication_safe
 ```
 
-- Ingestion API v2: `minimal_publication` / potentially `publication_safe=true`
-- WFS / SPARQL / CSV-B2: `standard` / `publication_safe=false` for automatic external publication
-
-PROD POST metadata-only runs must not require response download or SHA-256 in the exporter.
+- Ingestion API PRE, CIRCE, stable Ebro and parallel Ebro: `minimal_publication` with an allowlisted technical record. PRE and the PROD POST profiles can be `publication_safe=true` when that record passes the scanner.
+- WFS and SPARQL use the same sanitized projection and stay `publication_safe=false` (`minimal_publication_internal`). They are not raw `standard` copies.
+- CSV-B2 remains `standard` / `standard_internal`. A package that still contains raw summaries, JWT claims, context, DataAddress or request/response bodies is not externally publication-ready.
+- Operational negotiation, agreement and transfer UUIDs stay withheld. Run IDs, asset IDs and GET SHA-256 digests are technical evidence, not credentials.
+- PROD POST metadata-only runs must not require a response download or invent a response SHA-256. Request and response sizes stay in the allowlisted record.
+- A selection that contains only `minimal_publication` slots is packaged without `--excel`, with `--strict` still enabled. A correct ZIP exits 0. `publication_ready=false` can remain the right status for internal profiles such as WFS and SPARQL. That status does not follow the exit code. `publication_ready=true` is not authorization to distribute the package. A selection that includes a `standard` slot, such as `legacy_assessment`, may still pass `--excel`.
 
 ## Tests
 

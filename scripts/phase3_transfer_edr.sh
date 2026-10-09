@@ -87,17 +87,11 @@ _phase3_id_is_set() {
 
 _phase3_edr_url_has_sensitive_params() {
   local value="${1:-}"
-  local lower="${value,,}"
-
-  [[ "${lower}" =~ [\?\#\&]([^=]*)(access_token|token|bearer|auth|code|credential)([^=]*)= ]]
+  [[ -n "${value}" && "${value}" != "null" ]]
 }
 
 _phase3_safe_summary_edr_url() {
-  if _phase3_edr_url_has_sensitive_params "${EDR_URL:-}"; then
-    printf '%s' '<redacted-sensitive-edr-url>'
-  else
-    printf '%s' "${EDR_URL:-}"
-  fi
+  lib_diagnostic_edr_endpoint "${EDR_URL:-}"
 }
 
 # Ejecuta un bloque jq definido como readonly en este script sin expansión bash de $variables jq.
@@ -312,24 +306,24 @@ readonly _PHASE3_JQ_EDR_KEYS_DIAGNOSTIC='
 '
 
 readonly _PHASE3_JQ_REDACT_EDR='
-  def key_visible($k):
+  def key_is_endpoint($k):
     ($k | ascii_downcase) as $kl
-    | ($kl == "endpoint" or $kl == "endpointurl" or $kl == "edc:endpoint");
+    | $kl == "endpoint" or $kl == "endpointurl" or $kl == "edc:endpoint"
+      or ($kl | test("(^|[/:])endpoint$"));
 
   def key_should_redact($k):
-    key_visible($k) | not
-    and (
-      ($k | ascii_downcase | test("token"))
-      or ($k | ascii_downcase | test("secret"))
-      or ($k | ascii_downcase | test("authorization"))
-      or ($k | ascii_downcase | test("auth"))
-      or ($k | ascii_downcase | test("code"))
-    );
+    ($k | ascii_downcase | test("token"))
+    or ($k | ascii_downcase | test("secret"))
+    or ($k | ascii_downcase | test("authorization"))
+    or ($k | ascii_downcase | test("auth"))
+    or ($k | ascii_downcase | test("code"));
 
   def redact:
     if type == "object" then
       with_entries(
-        if (.key | ascii_downcase | endswith("header:x-api-key")) then
+        if key_is_endpoint(.key) then
+          .value = "<redacted-edr-endpoint>"
+        elif (.key | ascii_downcase | endswith("header:x-api-key")) then
           .value = "<redacted>"
         elif key_should_redact(.key) then
           .value = "***REDACTED***"
@@ -629,6 +623,9 @@ _phase3_consume_data_with_auth_candidates() {
         --argjson selected "$([[ "${selected}" == true ]] && echo true || echo false)" \
         '{attempt: $attempt, label: $label, http: $http, selected: $selected}'
     )")
+    if (( success == 1 )); then
+      break
+    fi
   done
 
   attempts_json="$(jq -s '.' <<< "$(printf '%s\n' "${summary_lines[@]}")")"
@@ -1099,7 +1096,6 @@ _phase3_obtain_edr
 PHASE3_EDR_URL_SENSITIVE=0
 if _phase3_edr_url_has_sensitive_params "${EDR_URL}"; then
   PHASE3_EDR_URL_SENSITIVE=1
-  lib_log WARN "EDR_URL contiene parámetros sensibles; no se persistirá en claro en phase3_env.sh ni summary.json"
 fi
 if ! _phase3_id_is_set "${PHASE3_EDR_AUTHORIZATION:-}" \
   && ! { _phase3_id_is_set "${PHASE3_EDR_AUTH_KEY:-}" && _phase3_id_is_set "${PHASE3_EDR_AUTH_CODE:-}"; }; then
@@ -1169,17 +1165,11 @@ fi
 # ---------------------------------------------------------------------------
 
 PHASE3_STEP="export_env"
-if (( PHASE3_EDR_URL_SENSITIVE == 1 )); then
-  _phase3_sensitive_edr_url="${EDR_URL}"
-  unset EDR_URL
-  lib_export_phase_env 3
-  EDR_URL="${_phase3_sensitive_edr_url}"
-  export EDR_URL
-else
-  lib_export_phase_env 3
-fi
+# phase3_env.sh is private runtime state. It keeps EDR_URL so a later phase
+# can resume. Diagnostic artifacts receive only the redacted placeholder.
+lib_export_phase_env 3
 lib_set_phase_status 3 ok
 
 trap - ERR
 _phase3_cleanup
-lib_log INFO "Fase 3 OK — SUFFIX=${SUFFIX} TRANSFER_ID=${TRANSFER_ID} EDR_URL=$(_phase3_safe_summary_edr_url)"
+lib_log INFO "Fase 3 OK — SUFFIX=${SUFFIX} TRANSFER_ID=${TRANSFER_ID} edr_endpoint_redacted=$(lib_edr_endpoint_redacted_json "${EDR_URL:-}")"
